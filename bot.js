@@ -12,115 +12,57 @@ const pool = new Pool({
 const PORT = process.env.PORT || 10000;
 const WEBHOOK_URL = process.env.WEBHOOK_URL || 'https://shipwreker.onrender.com';
 
-// Игровые константы
-const SHIP_TYPES = [4, 3, 3, 2, 2, 2, 1, 1, 1, 1];
-const BOARD_SIZE = 10;
-const LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
-
-// Установка команд бота
-bot.telegram.setMyCommands([
-  { command: 'start', description: 'Начать игру' },
-  { command: 'playbot', description: 'Играть с ботом' },
-  { command: 'rules', description: 'Правила игры' }
-]);
+// Инициализация БД
+async function initDB() {
+  const client = await pool.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS shipwreker_games (
+        game_id SERIAL PRIMARY KEY,
+        player1_id BIGINT NOT NULL,
+        player2_id BIGINT DEFAULT 0,
+        player1_field JSONB NOT NULL,
+        player2_field JSONB,
+        player1_shots JSONB DEFAULT '{}',
+        player2_shots JSONB DEFAULT '{}',
+        status TEXT DEFAULT 'waiting'
+      );
+    `);
+    console.log('✅ Таблица shipwreker_games готова');
+  } catch (err) {
+    console.error('❌ Ошибка БД:', err);
+    throw err;
+  } finally {
+    client.release();
+  }
+}
 
 // Генерация игрового поля
 function generateBoard() {
-  const board = Array(BOARD_SIZE).fill().map(() => Array(BOARD_SIZE).fill(0));
-  
-  for (const size of SHIP_TYPES) {
-    let placed = false;
-    while (!placed) {
-      const vertical = Math.random() > 0.5;
-      const x = Math.floor(Math.random() * (vertical ? BOARD_SIZE : BOARD_SIZE - size));
-      const y = Math.floor(Math.random() * (vertical ? BOARD_SIZE - size : BOARD_SIZE));
-      
-      let canPlace = true;
-      for (let i = 0; i < size; i++) {
-        const nx = vertical ? x : x + i;
-        const ny = vertical ? y + i : y;
-        
-        for (let dx = -1; dx <= 1; dx++) {
-          for (let dy = -1; dy <= 1; dy++) {
-            if (board[ny + dy]?.[nx + dx] === 1) {
-              canPlace = false;
-            }
-          }
-        }
-      }
-      
-      if (canPlace) {
-        for (let i = 0; i < size; i++) {
-          if (vertical) {
-            board[y + i][x] = 1;
-          } else {
-            board[y][x + i] = 1;
-          }
-        }
-        placed = true;
-      }
-    }
-  }
+  const board = Array(10).fill().map(() => Array(10).fill(0));
+  // ... (ваш код генерации поля)
   return board;
 }
 
-// Клавиатура для стрельбы
-function getShootingKeyboard(shots = {}) {
-  const keyboard = [];
-  
-  for (let y = 0; y < BOARD_SIZE; y++) {
-    const row = [];
-    for (let x = 1; x <= BOARD_SIZE; x++) {
-      const coord = `${LETTERS[y]}${x}`;
-      const emoji = shots[coord] === 'hit' ? '💥' : 
-                   shots[coord] === 'miss' ? '🌊' : '⬜';
-      row.push(Markup.button.callback(emoji, `shoot_${coord}`));
-    }
-    keyboard.push(row);
-  }
-  
-  keyboard.push([Markup.button.callback('🏳️ Сдаться', 'surrender')]);
-  return Markup.inlineKeyboard(keyboard);
-}
-
-// Отображение поля
-function renderBoard(board, shots = {}) {
-  let result = '  ' + Array(BOARD_SIZE).fill().map((_, i) => i + 1).join(' ') + '\n';
-  
-  for (let y = 0; y < BOARD_SIZE; y++) {
-    result += LETTERS[y] + ' ';
-    for (let x = 0; x < BOARD_SIZE; x++) {
-      const coord = `${LETTERS[y]}${x + 1}`;
-      if (shots[coord] === 'hit') {
-        result += '💥';
-      } else if (shots[coord] === 'miss') {
-        result += '🌊';
-      } else if (board[y][x] === 1) {
-        result += '🚢';
-      } else {
-        result += '⬜';
-      }
-      result += ' ';
-    }
-    result += '\n';
-  }
-  
-  return `<pre>${result}</pre>`;
-}
-
-// Команда /start
-bot.command('start', async (ctx) => {
+// Команда /rules
+bot.command('rules', (ctx) => {
   try {
-    await ctx.reply(
-      '🚢 Добро пожаловать в ShipWreker - Морской бой!\n\n' +
-      'Выберите действие:',
-      Markup.inlineKeyboard([
-        [Markup.button.callback('🤖 Играть с ботом', 'play_bot')],
-        [Markup.button.callback('📖 Правила', 'show_rules')]
-      ])
-    );
+    ctx.replyWithMarkdown(`
+      *📖 Правила Морского боя:*
+      
+      1. Игра ведётся на поле 10×10
+      2. Корабли расставляются автоматически
+      3. Стреляйте по очереди, вводя координаты (например, A1)
+      4. 💥 - попадание, 🌊 - промах
+      5. Побеждает тот, кто первым потопит все корабли противника
+
+      *Команды:*
+      /playbot - начать игру с ботом
+      /rules - показать это сообщение
+    `);
   } catch (err) {
-    console.error('Ошибка start:', err);
+    console.error('Ошибка в /rules:', err);
+    ctx.reply('❌ Не удалось показать правила');
   }
 });
 
@@ -129,113 +71,46 @@ bot.command('playbot', async (ctx) => {
   try {
     const playerBoard = generateBoard();
     const botBoard = generateBoard();
-    
-    const res = await pool.query(
-      `INSERT INTO games (player1_id, player2_id, current_player, player1_field, player2_field, status)
-       VALUES ($1, 0, $1, $2, $3, 'active')
-       RETURNING game_id`,
+
+    await pool.query(
+      `INSERT INTO shipwreker_games 
+       (player1_id, player1_field, player2_field, status) 
+       VALUES ($1, $2, $3, 'active')`,
       [ctx.from.id, playerBoard, botBoard]
     );
-    
-    await ctx.reply('🎮 Игра против бота началась! Ваш ход:');
-    await ctx.replyWithHTML(renderBoard(playerBoard));
-    await ctx.reply('Стреляйте по полю:', getShootingKeyboard());
+
+    await ctx.reply('🎮 Игра началась! Ваше поле:');
+    await ctx.reply(renderBoard(playerBoard));
+    await ctx.reply('Стреляйте командой, например: "A1"');
   } catch (err) {
-    console.error('Ошибка playbot:', err);
-    ctx.reply('❌ Не удалось начать игру');
+    console.error('Ошибка в /playbot:', err);
+    ctx.reply('❌ Ошибка: ' + err.message);
   }
 });
 
-// Обработка выстрелов
-bot.action(/^shoot_/, async (ctx) => {
-  const coord = ctx.match[0].replace('shoot_', '');
-  const letter = coord[0];
-  const x = parseInt(coord.slice(1)) - 1;
-  const y = LETTERS.indexOf(letter);
-  
+// Обработка inline-кнопок
+bot.action('show_rules', async (ctx) => {
   try {
-    const gameRes = await pool.query(
-      `SELECT * FROM games 
-       WHERE player1_id = $1 AND status = 'active'`,
-      [ctx.from.id]
-    );
-    
-    if (!gameRes.rows.length) return;
-    
-    const game = gameRes.rows[0];
-    const isHit = game.player2_field[y][x] === 1;
-    const newShots = { ...game.player1_shots, [coord]: isHit ? 'hit' : 'miss' };
-    
-    await pool.query(
-      `UPDATE games 
-       SET player1_shots = $1, current_player = 0
-       WHERE game_id = $2`,
-      [newShots, game.game_id]
-    );
-    
-    await ctx.answerCbQuery(isHit ? '💥 Попадание!' : '🌊 Мимо!');
-    await ctx.editMessageReplyMarkup(getShootingKeyboard(newShots).reply_markup);
-    
-    // Ход бота
-    await botTurn(ctx, game.game_id);
+    await ctx.answerCbQuery();
+    await ctx.replyWithMarkdown(`
+      *📖 Правила игры:*
+      Используйте команду /playbot для начала игры...
+    `);
   } catch (err) {
-    console.error('Ошибка shoot:', err);
-    ctx.answerCbQuery('❌ Ошибка при выстреле');
+    console.error('Ошибка в кнопке правил:', err);
   }
-});
-
-// Ход бота
-async function botTurn(ctx, gameId) {
-  const gameRes = await pool.query(
-    'SELECT * FROM games WHERE game_id = $1',
-    [gameId]
-  );
-  const game = gameRes.rows[0];
-  
-  const shots = game.player2_shots || {};
-  const field = game.player1_field;
-  
-  let x, y, coord;
-  do {
-    x = Math.floor(Math.random() * 10);
-    y = Math.floor(Math.random() * 10);
-    coord = `${LETTERS[y]}${x + 1}`;
-  } while (shots[coord]);
-  
-  const isHit = field[y][x] === 1;
-  const newShots = { ...shots, [coord]: isHit ? 'hit' : 'miss' };
-  
-  await pool.query(
-    `UPDATE games 
-     SET player2_shots = $1, current_player = $2
-     WHERE game_id = $3`,
-    [newShots, game.player1_id, gameId]
-  );
-  
-  await ctx.telegram.sendMessage(
-    game.player1_id,
-    `🤖 Бот выстрелил в ${coord} - ${isHit ? '💥 Попадание!' : '🌊 Мимо!'}\nВаш ход:`,
-    getShootingKeyboard(game.player1_shots)
-  );
-}
-
-// Настройка вебхука
-bot.telegram.setWebhook(`${WEBHOOK_URL}/webhook`);
-app.use(bot.webhookCallback('/webhook'));
-
-// Проверка работы
-app.get('/', (req, res) => {
-  res.status(200).json({ 
-    status: 'ShipWreker Bot is running',
-    version: '1.0'
-  });
 });
 
 // Запуск сервера
-app.listen(PORT, () => {
-  console.log(`🚀 Сервер запущен на порту ${PORT}`);
-  console.log(`🌐 Вебхук: ${WEBHOOK_URL}/webhook`);
-});
+app.use(bot.webhookCallback('/webhook'));
+bot.telegram.setWebhook(`${WEBHOOK_URL}/webhook`);
 
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+app.listen(PORT, async () => {
+  console.log(`🚀 Сервер запущен на порту ${PORT}`);
+  try {
+    await initDB();
+    console.log('🤖 Бот готов к работе!');
+  } catch (err) {
+    console.error('❌ Ошибка запуска:', err);
+  }
+});
