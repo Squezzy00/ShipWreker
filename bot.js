@@ -9,67 +9,22 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
+const WEBHOOK_URL = process.env.WEBHOOK_URL || 'https://shipwreker.onrender.com';
 
 // Игровые константы
-const SHIP_TYPES = [4, 3, 3, 2, 2, 2, 1, 1, 1, 1]; // Размеры кораблей
+const SHIP_TYPES = [4, 3, 3, 2, 2, 2, 1, 1, 1, 1];
 const BOARD_SIZE = 10;
 const LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
 
 // Установка команд бота
-const commands = [
+bot.telegram.setMyCommands([
   { command: 'start', description: 'Начать игру' },
-  { command: 'rules', description: 'Правила игры' },
   { command: 'playbot', description: 'Играть с ботом' },
-  { command: 'playfriend', description: 'Играть с другом' },
-  { command: 'invite', description: 'Пригласить друга' }
-];
+  { command: 'rules', description: 'Правила игры' }
+]);
 
-// Инициализация бота
-async function initBot() {
-  try {
-    await bot.telegram.setMyCommands(commands);
-    await initDB();
-    console.log('✅ Бот инициализирован');
-  } catch (err) {
-    console.error('❌ Ошибка инициализации:', err);
-    process.exit(1);
-  }
-}
-
-// Инициализация БД
-async function initDB() {
-  const client = await pool.connect();
-  try {
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        user_id BIGINT PRIMARY KEY,
-        username TEXT,
-        first_name TEXT
-      );
-    `);
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS games (
-        game_id SERIAL PRIMARY KEY,
-        player1_id BIGINT NOT NULL,
-        player2_id BIGINT,
-        current_player BIGINT,
-        player1_field JSONB NOT NULL,
-        player2_field JSONB,
-        player1_shots JSONB DEFAULT '{}',
-        player2_shots JSONB DEFAULT '{}',
-        status TEXT DEFAULT 'waiting'
-      );
-    `);
-  } catch (err) {
-    console.error('❌ Ошибка БД:', err);
-    throw err;
-  } finally {
-    client.release();
-  }
-}
-
-// Генерация поля с кораблями
+// Генерация игрового поля
 function generateBoard() {
   const board = Array(BOARD_SIZE).fill().map(() => Array(BOARD_SIZE).fill(0));
   
@@ -85,7 +40,6 @@ function generateBoard() {
         const nx = vertical ? x : x + i;
         const ny = vertical ? y + i : y;
         
-        // Проверяем соседние клетки
         for (let dx = -1; dx <= 1; dx++) {
           for (let dy = -1; dy <= 1; dy++) {
             if (board[ny + dy]?.[nx + dx] === 1) {
@@ -110,8 +64,8 @@ function generateBoard() {
   return board;
 }
 
-// Генерация клавиатуры для стрельбы
-function generateShootingKeyboard(shots = {}) {
+// Клавиатура для стрельбы
+function getShootingKeyboard(shots = {}) {
   const keyboard = [];
   
   for (let y = 0; y < BOARD_SIZE; y++) {
@@ -129,7 +83,7 @@ function generateShootingKeyboard(shots = {}) {
   return Markup.inlineKeyboard(keyboard);
 }
 
-// Отображение поля игрока
+// Отображение поля
 function renderBoard(board, shots = {}) {
   let result = '  ' + Array(BOARD_SIZE).fill().map((_, i) => i + 1).join(' ') + '\n';
   
@@ -158,35 +112,16 @@ function renderBoard(board, shots = {}) {
 bot.command('start', async (ctx) => {
   try {
     await ctx.reply(
-      '🚢 Добро пожаловать в Морской бой!\n\n' +
+      '🚢 Добро пожаловать в ShipWreker - Морской бой!\n\n' +
       'Выберите действие:',
       Markup.inlineKeyboard([
-        [Markup.button.callback('📖 Правила', 'show_rules')],
-        [
-          Markup.button.callback('🤖 Играть с ботом', 'play_bot'),
-          Markup.button.callback('👥 Играть с другом', 'play_friend')
-        ]
+        [Markup.button.callback('🤖 Играть с ботом', 'play_bot')],
+        [Markup.button.callback('📖 Правила', 'show_rules')]
       ])
     );
   } catch (err) {
     console.error('Ошибка start:', err);
-    ctx.reply('❌ Ошибка при запуске');
   }
-});
-
-// Команда /rules
-bot.command('rules', (ctx) => {
-  ctx.replyWithMarkdown(
-    `*📖 Правила Морского боя:*\n\n` +
-    `1. Играют два игрока на поле 10×10\n` +
-    `2. Корабли расставляются автоматически\n` +
-    `3. По очереди делаете выстрелы\n` +
-    `4. Цель - первым потопить все корабли противника\n\n` +
-    `*Доступные команды:*\n` +
-    `/playbot - игра с ботом\n` +
-    `/playfriend - игра с другом\n` +
-    `/invite @user - пригласить друга`
-  );
 });
 
 // Команда /playbot
@@ -204,7 +139,7 @@ bot.command('playbot', async (ctx) => {
     
     await ctx.reply('🎮 Игра против бота началась! Ваш ход:');
     await ctx.replyWithHTML(renderBoard(playerBoard));
-    await ctx.reply('Стреляйте по полю:', generateShootingKeyboard());
+    await ctx.reply('Стреляйте по полю:', getShootingKeyboard());
   } catch (err) {
     console.error('Ошибка playbot:', err);
     ctx.reply('❌ Не удалось начать игру');
@@ -221,45 +156,28 @@ bot.action(/^shoot_/, async (ctx) => {
   try {
     const gameRes = await pool.query(
       `SELECT * FROM games 
-       WHERE (player1_id = $1 OR player2_id = $1) 
-       AND status = 'active' 
-       AND current_player = $1`,
+       WHERE player1_id = $1 AND status = 'active'`,
       [ctx.from.id]
     );
     
-    if (!gameRes.rows.length) {
-      return ctx.answerCbQuery('❌ Сейчас не ваш ход');
-    }
+    if (!gameRes.rows.length) return;
     
     const game = gameRes.rows[0];
-    const isPlayer1 = game.player1_id === ctx.from.id;
-    const opponentField = isPlayer1 ? game.player2_field : game.player1_field;
-    const playerShots = isPlayer1 ? game.player1_shots : game.player2_shots;
-    
-    if (playerShots[coord]) {
-      return ctx.answerCbQuery('❌ Вы уже стреляли сюда');
-    }
-    
-    const isHit = opponentField[y][x] === 1;
-    const newShots = { ...playerShots, [coord]: isHit ? 'hit' : 'miss' };
+    const isHit = game.player2_field[y][x] === 1;
+    const newShots = { ...game.player1_shots, [coord]: isHit ? 'hit' : 'miss' };
     
     await pool.query(
       `UPDATE games 
-       SET ${isPlayer1 ? 'player1_shots' : 'player2_shots'} = $1,
-           current_player = ${isPlayer1 ? 0 : game.player1_id}
+       SET player1_shots = $1, current_player = 0
        WHERE game_id = $2`,
       [newShots, game.game_id]
     );
     
     await ctx.answerCbQuery(isHit ? '💥 Попадание!' : '🌊 Мимо!');
-    await ctx.editMessageReplyMarkup(generateShootingKeyboard(newShots).reply_markup);
+    await ctx.editMessageReplyMarkup(getShootingKeyboard(newShots).reply_markup);
     
-    // Проверка победы и ход бота
-    if (isPlayer1 && await checkWin(newShots, opponentField)) {
-      await endGame(ctx, game.game_id, ctx.from.id);
-    } else if (isPlayer1) {
-      await botTurn(ctx, game.game_id);
-    }
+    // Ход бота
+    await botTurn(ctx, game.game_id);
   } catch (err) {
     console.error('Ошибка shoot:', err);
     ctx.answerCbQuery('❌ Ошибка при выстреле');
@@ -289,85 +207,34 @@ async function botTurn(ctx, gameId) {
   
   await pool.query(
     `UPDATE games 
-     SET player2_shots = $1,
-         current_player = $2
+     SET player2_shots = $1, current_player = $2
      WHERE game_id = $3`,
     [newShots, game.player1_id, gameId]
   );
   
-  if (await checkWin(newShots, field)) {
-    await endGame(ctx, gameId, 0);
-  } else {
-    await ctx.telegram.sendMessage(
-      game.player1_id,
-      `🤖 Бот выстрелил в ${coord} - ${isHit ? '💥 Попадание!' : '🌊 Мимо!'}\nВаш ход:`,
-      generateShootingKeyboard(game.player1_shots)
-    );
-  }
-}
-
-// Проверка победы
-async function checkWin(shots, field) {
-  let hits = 0;
-  let ships = 0;
-  
-  for (let y = 0; y < BOARD_SIZE; y++) {
-    for (let x = 0; x < BOARD_SIZE; x++) {
-      if (field[y][x] === 1) ships++;
-      const coord = `${LETTERS[y]}${x + 1}`;
-      if (shots[coord] === 'hit') hits++;
-    }
-  }
-  
-  return hits === ships;
-}
-
-// Завершение игры
-async function endGame(ctx, gameId, winnerId) {
-  const gameRes = await pool.query(
-    'SELECT * FROM games WHERE game_id = $1',
-    [gameId]
+  await ctx.telegram.sendMessage(
+    game.player1_id,
+    `🤖 Бот выстрелил в ${coord} - ${isHit ? '💥 Попадание!' : '🌊 Мимо!'}\nВаш ход:`,
+    getShootingKeyboard(game.player1_shots)
   );
-  const game = gameRes.rows[0];
-  
-  await pool.query(
-    'UPDATE games SET status = $1 WHERE game_id = $2',
-    ['finished', gameId]
-  );
-  
-  if (winnerId === 0) {
-    await ctx.telegram.sendMessage(
-      game.player1_id,
-      '😢 Вы проиграли! Бот победил.'
-    );
-  } else {
-    await ctx.telegram.sendMessage(
-      winnerId,
-      '🎉 Вы победили!'
-    );
-    if (game.player2_id !== 0) {
-      await ctx.telegram.sendMessage(
-        game.player1_id === winnerId ? game.player2_id : game.player1_id,
-        '😢 Вы проиграли!'
-      );
-    }
-  }
 }
 
-// Запуск сервера
-app.use(express.json());
+// Настройка вебхука
+bot.telegram.setWebhook(`${WEBHOOK_URL}/webhook`);
 app.use(bot.webhookCallback('/webhook'));
 
-app.get('/', (req, res) => res.send('Морской бот работает!'));
+// Проверка работы
+app.get('/', (req, res) => {
+  res.status(200).json({ 
+    status: 'ShipWreker Bot is running',
+    version: '1.0'
+  });
+});
 
-app.listen(PORT, async () => {
+// Запуск сервера
+app.listen(PORT, () => {
   console.log(`🚀 Сервер запущен на порту ${PORT}`);
-  try {
-    await initBot();
-    console.log('🤖 Бот готов к работе!');
-  } catch (err) {
-    console.error('❌ Ошибка запуска:', err);
-  }
+  console.log(`🌐 Вебхук: ${WEBHOOK_URL}/webhook`);
 });
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
