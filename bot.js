@@ -1,21 +1,14 @@
 const { Telegraf, Markup } = require('telegraf');
-const { Pool } = require('pg');
 const express = require('express');
 
 const app = express();
 const bot = new Telegraf(process.env.BOT_TOKEN);
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
-});
-
 const PORT = process.env.PORT || 10000;
-const LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
 
-// Хранение состояния игры
+const LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
 const games = new Map();
 
-// Генерация поля
+// Генерация игрового поля
 function generateBoard() {
   const board = Array(10).fill().map(() => Array(10).fill(0));
   const ships = [4, 3, 3, 2, 2, 2, 1, 1, 1, 1];
@@ -45,64 +38,49 @@ function generateBoard() {
   return board;
 }
 
-// Компактная клавиатура
+// Создание клавиатуры для стрельбы (полноценное 10x10)
 function getShootingKeyboard(shots = {}) {
   const keyboard = [];
   
-  // Заголовок с цифрами
-  const header = [{ text: ' ', callback_data: 'none' }];
+  // Верхняя строка с цифрами (1-10)
+  const headerRow = [{ text: ' ', callback_data: 'header' }];
   for (let i = 1; i <= 10; i++) {
-    header.push({ text: i > 9 ? '⏹' : i.toString(), callback_data: 'none' });
+    headerRow.push({ 
+      text: i.toString(), 
+      callback_data: 'header',
+      width: 1
+    });
   }
-  keyboard.push(header);
+  keyboard.push(headerRow);
   
-  // Основное поле
+  // Основные строки с буквами и кнопками
   for (let y = 0; y < 10; y++) {
-    const row = [{ text: LETTERS[y], callback_data: 'none' }];
+    const row = [{ 
+      text: LETTERS[y], 
+      callback_data: 'row_header',
+      width: 1
+    }];
+    
     for (let x = 1; x <= 10; x++) {
       const coord = `${LETTERS[y]}${x}`;
       row.push({
         text: shots[coord] === 'hit' ? '💥' : 
               shots[coord] === 'miss' ? '🌊' : '·',
-        callback_data: `shoot_${coord}`
+        callback_data: `shoot_${coord}`,
+        width: 1
       });
     }
     keyboard.push(row);
   }
   
-  keyboard.push([{ text: '🏳️ Сдаться', callback_data: 'surrender' }]);
-  return Markup.inlineKeyboard(keyboard);
-}
-
-// Проверка победы
-function checkWin(shots, board) {
-  let hits = 0;
-  let ships = 0;
+  // Кнопка сдачи
+  keyboard.push([{ 
+    text: '🏳️ Сдаться', 
+    callback_data: 'surrender',
+    width: 12
+  }]);
   
-  for (let y = 0; y < 10; y++) {
-    for (let x = 0; x < 10; x++) {
-      const coord = `${LETTERS[y]}${x+1}`;
-      if (shots[coord] === 'hit') hits++;
-      if (board[y][x] === 1) ships++;
-    }
-  }
-  
-  return hits === ships;
-}
-
-// Ход бота
-function makeBotMove(game) {
-  let x, y, coord;
-  do {
-    x = Math.floor(Math.random() * 10);
-    y = Math.floor(Math.random() * 10);
-    coord = `${LETTERS[y]}${x+1}`;
-  } while (game.botShots[coord]);
-  
-  const isHit = game.playerBoard[y][x] === 1;
-  game.botShots[coord] = isHit ? 'hit' : 'miss';
-  
-  return { coord, isHit };
+  return Markup.inlineKeyboard(keyboard, { columns: 11 });
 }
 
 // Команда /playbot
@@ -130,73 +108,89 @@ bot.command('playbot', async (ctx) => {
 // Обработка выстрелов
 bot.action(/^shoot_/, async (ctx) => {
   try {
+    const userId = ctx.from.id;
     const coord = ctx.match[0].replace('shoot_', '');
-    const game = games.get(ctx.from.id);
+    const game = games.get(userId);
     
-    if (!game || game.shots[coord]) {
-      return ctx.answerCbQuery('❌ Нельзя стрелять сюда');
+    if (!game) {
+      return ctx.answerCbQuery('❌ Игра не найдена');
     }
     
-    // Выстрел игрока
+    if (game.shots[coord]) {
+      return ctx.answerCbQuery('❌ Вы уже стреляли сюда');
+    }
+    
+    // Обработка выстрела
     const letter = coord[0];
     const x = parseInt(coord.slice(1)) - 1;
     const y = LETTERS.indexOf(letter);
     const isHit = game.botBoard[y][x] === 1;
     game.shots[coord] = isHit ? 'hit' : 'miss';
     
+    // Обновление клавиатуры
+    await ctx.editMessageReplyMarkup(
+      getShootingKeyboard(game.shots).reply_markup
+    );
+    await ctx.answerCbQuery(isHit ? '💥 Попадание!' : '🌊 Мимо!');
+    
     // Проверка победы
     if (checkWin(game.shots, game.botBoard)) {
       await ctx.reply('🎉 Вы победили! Все корабли противника потоплены!');
-      games.delete(ctx.from.id);
+      games.delete(userId);
       return;
     }
     
     // Ход бота
-    const botMove = makeBotMove(game);
-    if (checkWin(game.botShots, game.playerBoard)) {
-      await ctx.reply('😢 Бот победил! Все ваши корабли потоплены!');
-      games.delete(ctx.from.id);
-      return;
-    }
-    
-    // Обновление интерфейса
-    await ctx.answerCbQuery(isHit ? '💥 Попадание!' : '🌊 Мимо!');
-    await ctx.editMessageReplyMarkup(
-      getShootingKeyboard(game.shots).reply_markup
-    );
-    
-    // Отчет о ходе бота
-    await ctx.reply(
-      `🤖 Бот выстрелил в ${botMove.coord} - ` +
-      `${botMove.isHit ? '💥 Попадание!' : '🌊 Мимо!'}\n` +
-      `Ваше поле:\n${renderBoardHit(game.playerBoard, game.botShots)}`
-    );
+    await botMove(ctx, game, userId);
     
   } catch (err) {
     console.error('Shoot error:', err);
-    ctx.answerCbQuery('❌ Ошибка выстрела');
+    ctx.answerCbQuery('❌ Ошибка обработки выстрела');
   }
 });
 
-// Команда /surrender
-bot.command('surrender', (ctx) => {
-  if (games.has(ctx.from.id)) {
-    games.delete(ctx.from.id);
-    ctx.reply('🏳️ Вы сдались! Игра завершена.');
-  } else {
-    ctx.reply('❌ Нет активной игры для сдачи.');
+// Ход бота
+async function botMove(ctx, game, userId) {
+  let x, y, coord;
+  do {
+    x = Math.floor(Math.random() * 10);
+    y = Math.floor(Math.random() * 10);
+    coord = `${LETTERS[y]}${x+1}`;
+  } while (game.botShots[coord]);
+  
+  const isHit = game.playerBoard[y][x] === 1;
+  game.botShots[coord] = isHit ? 'hit' : 'miss';
+  
+  // Проверка победы бота
+  if (checkWin(game.botShots, game.playerBoard)) {
+    await ctx.reply('😢 Бот победил! Все ваши корабли потоплены!');
+    games.delete(userId);
+    return;
   }
-});
+  
+  // Отчет о ходе бота
+  await ctx.reply(
+    `🤖 Бот выстрелил в ${coord} - ` +
+    `${isHit ? '💥 Попадание!' : '🌊 Мимо!'}\n` +
+    `Ваше поле:\n${renderBoardHit(game.playerBoard, game.botShots)}`
+  );
+}
 
-// Обработка сдачи через кнопку
-bot.action('surrender', async (ctx) => {
-  await ctx.answerCbQuery();
-  if (games.has(ctx.from.id)) {
-    games.delete(ctx.from.id);
-    await ctx.reply('🏳️ Вы сдались! Игра завершена.');
-    await ctx.deleteMessage();
+// Проверка победы
+function checkWin(shots, board) {
+  let hits = 0;
+  let ships = 0;
+  
+  for (let y = 0; y < 10; y++) {
+    for (let x = 0; x < 10; x++) {
+      const coord = `${LETTERS[y]}${x+1}`;
+      if (shots[coord] === 'hit') hits++;
+      if (board[y][x] === 1) ships++;
+    }
   }
-});
+  
+  return hits === ships;
+}
 
 // Отображение поля с попаданиями
 function renderBoardHit(board, shots) {
@@ -230,6 +224,26 @@ function renderBoard(board) {
   }
   return `<pre>${result}</pre>`;
 }
+
+// Команда /surrender
+bot.command('surrender', (ctx) => {
+  if (games.has(ctx.from.id)) {
+    games.delete(ctx.from.id);
+    ctx.reply('🏳️ Вы сдались! Игра завершена.');
+  } else {
+    ctx.reply('❌ Нет активной игры для сдачи.');
+  }
+});
+
+// Обработка сдачи через кнопку
+bot.action('surrender', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (games.has(ctx.from.id)) {
+    games.delete(ctx.from.id);
+    await ctx.reply('🏳️ Вы сдались! Игра завершена.');
+    await ctx.deleteMessage();
+  }
+});
 
 // Вебхук
 app.use(bot.webhookCallback('/webhook'));
