@@ -1,24 +1,23 @@
-const { Telegraf, Markup } = require('telegraf');
+const { Telegraf } = require('telegraf');
 const { Pool } = require('pg');
 const express = require('express');
 
 const app = express();
 const bot = new Telegraf(process.env.BOT_TOKEN, {
-  telegram: { agent: null }, // Ускоряем запросы
-  handlerTimeout: 3000 // Таймаут обработки 3 сек
+  handlerTimeout: 3000,
+  telegram: { agent: null }
 });
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 5000
+  connectionTimeoutMillis: 2000,
+  idleTimeoutMillis: 10000
 });
 
 const PORT = process.env.PORT || 10000;
-const WEBHOOK_URL = process.env.WEBHOOK_URL || 'https://shipwreker.onrender.com';
 
-// Ускоренная генерация поля
+// Упрощенная генерация поля
 function generateBoard() {
   const board = Array(10).fill().map(() => Array(10).fill(0));
   const ships = [4, 3, 3, 2, 2, 2, 1, 1, 1, 1];
@@ -48,7 +47,7 @@ function generateBoard() {
   return board;
 }
 
-// Исправленное сохранение в БД
+// Исправленное сохранение игры
 async function saveGame(userId, playerBoard, botBoard) {
   const client = await pool.connect();
   try {
@@ -71,26 +70,21 @@ async function saveGame(userId, playerBoard, botBoard) {
 // Быстрая команда /playbot
 bot.command('playbot', async (ctx) => {
   try {
-    const startTime = Date.now();
+    // Быстрая генерация полей
+    const playerBoard = generateBoard();
+    const botBoard = generateBoard();
     
-    // Быстрая генерация
-    const [playerBoard, botBoard] = await Promise.all([
-      Promise.resolve(generateBoard()),
-      Promise.resolve(generateBoard())
-    ]);
+    // Сохранение с таймаутом (исправленный вариант)
+    const savePromise = saveGame(ctx.from.id, playerBoard, botBoard);
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Timeout saving game')), 2000);
+    });
     
-    // Асинхронное сохранение с таймаутом
-    await Promise.race([
-      saveGame(ctx.from.id, playerBoard, botBoard),
-      new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Timeout saving game')), 2000)
-    ]);
+    await Promise.race([savePromise, timeoutPromise]);
     
-    // Быстрый ответ
-    await ctx.reply('🎮 Игра началась! Ваш ход...');
+    await ctx.reply('🎮 Игра началась! Ваше поле:');
     await ctx.reply(formatBoard(playerBoard));
-    
-    console.log(`Game started in ${Date.now() - startTime}ms`);
+    await ctx.reply('Стреляйте командой, например: "A1"');
   } catch (err) {
     console.error('Playbot error:', err.message);
     ctx.reply('❌ ' + (err.message.includes('Timeout') ? 
@@ -99,22 +93,25 @@ bot.command('playbot', async (ctx) => {
   }
 });
 
-// Оптимизированный вывод поля
+// Форматирование поля
 function formatBoard(board) {
   return board.map(row => 
     row.map(cell => cell === 1 ? '🚢' : '🌊').join('')
   ).join('\n');
 }
 
-// Настройка вебхука
-app.use(express.json({ limit: '10kb' }));
-app.use(bot.webhookCallback('/webhook', { timeout: 3000 }));
-
-bot.telegram.setWebhook(`${WEBHOOK_URL}/webhook`, {
-  drop_pending_updates: true
+// Проверка работы
+app.get('/', (req, res) => {
+  res.send('ShipWreker Bot is running');
 });
 
+// Вебхук
+app.use(bot.webhookCallback('/webhook'));
+bot.telegram.setWebhook(`${process.env.WEBHOOK_URL}/webhook`);
+
+// Запуск сервера
 app.listen(PORT, () => {
-  console.log(`🚀 Server ready on ${PORT}`);
-  process.on('SIGINT', () => bot.stop('SIGINT'));
+  console.log(`🚀 Server started on port ${PORT}`);
 });
+
+process.once('SIGINT', () => bot.stop('SIGINT'));
