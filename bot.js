@@ -41,19 +41,17 @@ const VIP_STATUSES = {
     diamond: { name: '✨ Алмаз', price: 5000000, bonusIncome: 50, bonusDefense: 75, bonusAttack: 50, gpuMultiplier: 32, emoji: '✨' }
 };
 
-// ========== ДОНАТ (REAL MONEY) ==========
-const DONATE_ITEMS = {
-    1: { name: '💎 1000 монет', priceUSD: 1, coins: 1000 },
-    2: { name: '💎 10000 монет', priceUSD: 8, coins: 10000 },
-    3: { name: '💎 100000 монет', priceUSD: 70, coins: 100000 },
-    4: { name: '🥉 VIP Бронза', priceUSD: 5, vip: 'bronze' },
-    5: { name: '🥈 VIP Серебро', priceUSD: 15, vip: 'silver' },
-    6: { name: '🥇 VIP Золото', priceUSD: 50, vip: 'gold' },
-    7: { name: '💎 VIP Платина', priceUSD: 150, vip: 'platinum' },
-    8: { name: '✨ VIP Алмаз', priceUSD: 500, vip: 'diamond' },
-    9: { name: '🦀 Эксклюзивная клешня', priceUSD: 100, exclusiveClaw: true },
-    10: { name: '🚗 Эксклюзивная машина', priceUSD: 200, exclusiveCar: true }
+// ========== КЛЕШНИ ==========
+const CLAWS = {
+    1: { name: '🦀 Клешня новичка', rarity: 'common', price: 1000, attackBonus: 5, defenseBonus: 5 },
+    2: { name: '🦞 Стальная клешня', rarity: 'rare', price: 5000, attackBonus: 15, defenseBonus: 10 },
+    3: { name: '🦂 Золотая клешня', rarity: 'epic', price: 25000, attackBonus: 30, defenseBonus: 25 },
+    4: { name: '🐉 Драконья клешня', rarity: 'legendary', price: 100000, attackBonus: 60, defenseBonus: 50 },
+    5: { name: '👑 Королевская клешня', rarity: 'mythic', price: 500000, attackBonus: 120, defenseBonus: 100 },
+    6: { name: '✨ Божественная клешня', rarity: 'divine', price: 2500000, attackBonus: 250, defenseBonus: 200 }
 };
+
+const RARITY_COLORS = { common: '⚪', rare: '🔵', epic: '🟣', legendary: '🟠', mythic: '🔴', divine: '🌈' };
 
 // ========== МАШИНЫ И ГОНКИ ==========
 const CARS = {
@@ -74,6 +72,23 @@ const ENGINE_UPGRADES = {
 
 // ========== КРИПТОФЕРМА ==========
 const BASE_GPU_COUNT = 2500;
+const GPU_PRICE = 35000; // цена одной видеокарты
+const CRYPTO_NAME = '💰 Биткоин';
+
+// ========== НОВАЯ СИСТЕМА: АМУЛЕТЫ ФЕРМЫ ==========
+const FARM_AMULETS = {
+    1: { name: '📀 Амулет скорости', price: 50000, bonus: 10, type: 'speed' },
+    2: { name: '📀 Амулет удачи', price: 75000, bonus: 15, type: 'luck' },
+    3: { name: '📀 Амулет богатства', price: 100000, bonus: 20, type: 'wealth' },
+    4: { name: '📀 Амулет майнинга', price: 150000, bonus: 30, type: 'mining' }
+};
+
+// ========== НОВАЯ СИСТЕМА: КОСМИЧЕСКАЯ БИРЖА ==========
+const EXCHANGE_RATES = {
+    btc: { name: '₿ Биткоин', price: 50000, volatility: 0.1 },
+    eth: { name: 'Ξ Эфириум', price: 3000, volatility: 0.15 },
+    doge: { name: '🐶 Догикоин', price: 0.1, volatility: 0.3 }
+};
 
 // ========== БАЗА ДАННЫХ ==========
 const db = new sqlite3.Database('business.db');
@@ -107,7 +122,7 @@ db.serialize(() => {
         rating INTEGER DEFAULT 1000,
         business_battles_won INTEGER DEFAULT 0,
         gpu_count INTEGER DEFAULT 2500,
-        crypto_earned INTEGER DEFAULT 0,
+        crypto_balance INTEGER DEFAULT 0,
         car_id INTEGER DEFAULT 0,
         car_engine_level INTEGER DEFAULT 0,
         races_won INTEGER DEFAULT 0,
@@ -117,8 +132,11 @@ db.serialize(() => {
         referrer_id INTEGER DEFAULT 0,
         referral_count INTEGER DEFAULT 0,
         referral_earned INTEGER DEFAULT 0,
-        race_waiting INTEGER DEFAULT 0,
-        race_opponent INTEGER DEFAULT 0
+        farm_amulets TEXT DEFAULT '[]',
+        last_crypto_collect TEXT,
+        btc_balance INTEGER DEFAULT 0,
+        eth_balance INTEGER DEFAULT 0,
+        doge_balance INTEGER DEFAULT 0
     )`);
     
     db.run(`CREATE TABLE IF NOT EXISTS user_claws (
@@ -174,8 +192,8 @@ async function registerUser(userId, referrerId = null) {
     
     return new Promise((resolve, reject) => {
         const now = new Date().toISOString();
-        db.run(`INSERT INTO users (user_id, last_collect, last_daily, register_date, referrer_id, gpu_count) 
-                VALUES (?, ?, ?, ?, ?, ?)`, [userId, now, now, now, referrerId, BASE_GPU_COUNT], function(err) {
+        db.run(`INSERT INTO users (user_id, last_collect, last_daily, register_date, referrer_id, gpu_count, last_crypto_collect) 
+                VALUES (?, ?, ?, ?, ?, ?, ?)`, [userId, now, now, now, referrerId, BASE_GPU_COUNT, now], function(err) {
             if (err) reject(err);
             else {
                 if (this.lastID === 1) {
@@ -198,6 +216,15 @@ async function updateBalance(userId, amount) {
     return new Promise((resolve, reject) => {
         db.run('UPDATE users SET balance = balance + ?, total_earned = total_earned + ? WHERE user_id = ?',
             [amount, Math.max(amount, 0), userId], (err) => {
+            if (err) reject(err);
+            else resolve();
+        });
+    });
+}
+
+async function updateCryptoBalance(userId, cryptoType, amount) {
+    return new Promise((resolve, reject) => {
+        db.run(`UPDATE users SET ${cryptoType}_balance = ${cryptoType}_balance + ? WHERE user_id = ?`, [amount, userId], (err) => {
             if (err) reject(err);
             else resolve();
         });
@@ -259,47 +286,20 @@ async function setUserField(userId, field, value) {
     });
 }
 
-function calculateIncome(user) {
-    const level = user.business_level;
-    const business = BUSINESSES[level];
-    let multiplier = 1.0;
+async function addFarmAmulet(userId, amuletId) {
+    const user = await getUser(userId);
+    let amulets = JSON.parse(user.farm_amulets || '[]');
+    amulets.push(amuletId);
+    await setUserField(userId, 'farm_amulets', JSON.stringify(amulets));
     
-    if (user.manager) multiplier += 0.20;
-    if (user.advertising) multiplier += 0.15;
-    if (user.marketing) multiplier += 0.25;
-    
-    if (user.vip_level !== 'none' && VIP_STATUSES[user.vip_level]) {
-        multiplier += VIP_STATUSES[user.vip_level].bonusIncome / 100;
-    }
-    
-    return Math.floor(business.income * multiplier);
+    // Пересчитываем доход фермы
+    const gpuCount = getGPUCount(user);
+    const amuletBonus = amulets.length * FARM_AMULETS[amuletId]?.bonus || 0;
+    return amuletBonus;
 }
 
-function calculateAttack(user) {
-    let attack = BUSINESSES[user.business_level].attack + Math.floor(user.rating / 100);
-    if (user.hacker) attack += 30;
-    if (user.equipped_claw && CLAWS[user.equipped_claw]) {
-        attack += CLAWS[user.equipped_claw].attackBonus;
-    }
-    if (user.vip_level !== 'none' && VIP_STATUSES[user.vip_level]) {
-        attack += VIP_STATUSES[user.vip_level].bonusAttack;
-    }
-    if (user.exclusive_claw) attack += 100;
-    return attack;
-}
-
-function calculateDefense(user) {
-    let defense = BUSINESSES[user.business_level].defense;
-    if (user.manager) defense += 5;
-    if (user.security) defense += 20;
-    if (user.armored) defense += 40;
-    if (user.equipped_claw && CLAWS[user.equipped_claw]) {
-        defense += CLAWS[user.equipped_claw].defenseBonus;
-    }
-    if (user.vip_level !== 'none' && VIP_STATUSES[user.vip_level]) {
-        defense += VIP_STATUSES[user.vip_level].bonusDefense;
-    }
-    return defense;
+function getFarmAmulets(user) {
+    return JSON.parse(user.farm_amulets || '[]');
 }
 
 function getGPUCount(user) {
@@ -307,12 +307,35 @@ function getGPUCount(user) {
     if (user.vip_level !== 'none' && VIP_STATUSES[user.vip_level]) {
         multiplier = VIP_STATUSES[user.vip_level].gpuMultiplier;
     }
-    return BASE_GPU_COUNT * multiplier;
+    return (user.gpu_count || BASE_GPU_COUNT) * multiplier;
 }
 
 function calculateCryptoIncome(user) {
     const gpuCount = getGPUCount(user);
-    return Math.floor(gpuCount * 0.5); // 0.5 монеты за видеокарту в час
+    const amulets = getFarmAmulets(user);
+    const amuletBonus = amulets.length * 10; // +10% за каждый амулет
+    const baseIncome = gpuCount * 1; // 1 биткоин за видеокарту в час
+    return Math.floor(baseIncome * (1 + amuletBonus / 100));
+}
+
+async function collectCrypto(userId) {
+    const user = await getUser(userId);
+    const lastCollect = user.last_crypto_collect ? new Date(user.last_crypto_collect) : new Date(0);
+    const now = new Date();
+    const hoursPassed = Math.floor((now - lastCollect) / 3600000);
+    
+    if (hoursPassed < 1) {
+        const minutesLeft = 60 - Math.floor((now - lastCollect) / 60000);
+        return { error: `⏳ До следующего сбора ${minutesLeft} минут!` };
+    }
+    
+    const hourlyIncome = calculateCryptoIncome(user);
+    const totalIncome = hourlyIncome * hoursPassed;
+    
+    await updateCryptoBalance(userId, 'btc', totalIncome);
+    await setUserField(userId, 'last_crypto_collect', now.toISOString());
+    
+    return { success: true, income: totalIncome, hours: hoursPassed };
 }
 
 function getCarSpeed(user) {
@@ -325,120 +348,16 @@ function getCarSpeed(user) {
     return speed;
 }
 
-// ========== ГОНКИ ==========
-let waitingRacers = {};
-
-async function startRace(userId) {
-    const user = await getUser(userId);
-    if (!user.car_id || user.car_id === 0) {
-        return { error: '❌ У тебя нет машины! Купи в /магазин' };
-    }
-    
-    if (waitingRacers[userId]) {
-        return { error: '❌ Ты уже в очереди на гонку!' };
-    }
-    
-    // Ищем соперника
-    for (const [racerId, racerData] of Object.entries(waitingRacers)) {
-        if (racerId != userId && !racerData.found) {
-            waitingRacers[racerId].found = true;
-            waitingRacers[userId] = { found: true, opponent: racerId, startTime: Date.now() };
-            
-            const opponent = await getUser(parseInt(racerId));
-            const userSpeed = getCarSpeed(user);
-            const opponentSpeed = getCarSpeed(opponent);
-            
-            const userWinChance = userSpeed / (userSpeed + opponentSpeed) * 100;
-            const win = Math.random() * 100 < userWinChance;
-            
-            const prize = 10000;
-            
-            if (win) {
-                await updateBalance(userId, prize);
-                await updateBalance(parseInt(racerId), -prize);
-                await setUserField(userId, 'races_won', user.races_won + 1);
-                await setUserField(parseInt(racerId), 'races_lost', (opponent.races_lost || 0) + 1);
-                
-                delete waitingRacers[userId];
-                delete waitingRacers[racerId];
-                
-                return { 
-                    success: true, 
-                    text: `🏁 *ГОНКА ЗАВЕРШЕНА!* 🏁\n\n` +
-                          `🏎️ Твоя скорость: ${userSpeed}\n` +
-                          `🏎️ Скорость соперника: ${opponentSpeed}\n` +
-                          `🎉 *ПОБЕДА!* +${prize.toLocaleString()} монет`
-                };
-            } else {
-                await updateBalance(userId, -prize);
-                await updateBalance(parseInt(racerId), prize);
-                await setUserField(userId, 'races_lost', (user.races_lost || 0) + 1);
-                await setUserField(parseInt(racerId), 'races_won', opponent.races_won + 1);
-                
-                delete waitingRacers[userId];
-                delete waitingRacers[racerId];
-                
-                return { 
-                    success: false, 
-                    text: `🏁 *ГОНКА ЗАВЕРШЕНА!* 🏁\n\n` +
-                          `🏎️ Твоя скорость: ${userSpeed}\n` +
-                          `🏎️ Скорость соперника: ${opponentSpeed}\n` +
-                          `💀 *ПОРАЖЕНИЕ!* -${prize.toLocaleString()} монет`
-                };
-            }
-        }
-    }
-    
-    // Если соперник не найден, ставим в очередь
-    waitingRacers[userId] = { found: false, startTime: Date.now() };
-    
-    // Таймер на 100 секунд
-    setTimeout(async () => {
-        const racer = waitingRacers[userId];
-        if (racer && !racer.found) {
-            delete waitingRacers[userId];
-            
-            const userData = await getUser(userId);
-            const userSpeed = getCarSpeed(userData);
-            
-            // Гонка с ботом
-            const botSpeed = 50 + Math.random() * 100;
-            const win = userSpeed > botSpeed;
-            const prize = 5000;
-            
-            if (win) {
-                await updateBalance(userId, prize);
-                await setUserField(userId, 'races_won', userData.races_won + 1);
-                await bot.telegram.sendMessage(userId, 
-                    `🏁 *ГОНКА С БОТОМ!* 🏁\n\n` +
-                    `🏎️ Твоя скорость: ${userSpeed}\n` +
-                    `🤖 Скорость бота: ${Math.floor(botSpeed)}\n` +
-                    `🎉 *ПОБЕДА!* +${prize.toLocaleString()} монет`, 
-                    { parse_mode: 'Markdown' });
-            } else {
-                await updateBalance(userId, -prize);
-                await setUserField(userId, 'races_lost', (userData.races_lost || 0) + 1);
-                await bot.telegram.sendMessage(userId, 
-                    `🏁 *ГОНКА С БОТОМ!* 🏁\n\n` +
-                    `🏎️ Твоя скорость: ${userSpeed}\n` +
-                    `🤖 Скорость бота: ${Math.floor(botSpeed)}\n` +
-                    `💀 *ПОРАЖЕНИЕ!* -${prize.toLocaleString()} монет`, 
-                    { parse_mode: 'Markdown' });
-            }
-        }
-    }, 100000);
-    
-    return { text: `🏁 *ТЫ В ОЧЕРЕДИ НА ГОНКУ!* 🏁\n\nОжидаем соперника... (до 100 сек)\n💰 Ставка: 10,000 монет\n🏆 Победитель забирает всё!` };
-}
-
 // ========== КРАСИВЫЙ ПРОФИЛЬ ==========
-async function getProfileKeyboard(userId) {
+async function getProfileText(userId) {
     const user = await getUser(userId);
     const gameId = await getGameId(userId);
     const role = await getAdminRole(userId);
     const roleName = role ? ADMIN_ROLES[role]?.name || '👤 Игрок' : '👤 Игрок';
     const car = user.car_id ? CARS[user.car_id] : null;
     const gpuCount = getGPUCount(user);
+    const hourlyIncome = calculateCryptoIncome(user);
+    const amulets = getFarmAmulets(user);
     
     let text = `🌟━━━━━━━━━━━━━━━━━━━━━━🌟\n`;
     text += `             👑 *CRYPTO EMPIRE* 👑\n`;
@@ -449,15 +368,13 @@ async function getProfileKeyboard(userId) {
     text += `│ 📊 Уровень: ${user.business_level}/10\n`;
     text += `├─────────────────────────┤\n`;
     text += `│ 💰 Баланс: ${user.balance.toLocaleString()} ₽\n`;
-    text += `│ 📈 Всего: ${user.total_earned.toLocaleString()} ₽\n`;
+    text += `│ ₿ Биткоин: ${user.btc_balance?.toLocaleString() || 0}\n`;
     text += `│ 🎚️ Ур. игрока: ${user.level}\n`;
     text += `│ 📊 Рейтинг: ${user.rating}\n`;
     text += `├─────────────────────────┤\n`;
-    text += `│ ⚔️ Атака: ${calculateAttack(user)}\n`;
-    text += `│ 🛡️ Защита: ${calculateDefense(user)}\n`;
-    text += `├─────────────────────────┤\n`;
     text += `│ 💻 Видеокарт: ${gpuCount.toLocaleString()}\n`;
-    text += `│ 💰 Криптодоход/час: ${calculateCryptoIncome(user).toLocaleString()}\n`;
+    text += `│ 💰 Криптодоход/час: ${hourlyIncome.toLocaleString()} ₿\n`;
+    text += `│ 📀 Амулетов: ${amulets.length}/10\n`;
     text += `├─────────────────────────┤\n`;
     text += `│ ${car ? `${car.emoji} Машина: ${car.name}` : '🚗 Машины нет'}\n`;
     text += `│ 🏁 Побед в гонках: ${user.races_won || 0}\n`;
@@ -478,19 +395,19 @@ function mainKeyboard() {
         [Markup.button.callback('⚔️ Битва', 'battle_menu'), Markup.button.callback('🏁 Гонка', 'race')],
         [Markup.button.callback('🦀 Клешни', 'claws'), Markup.button.callback('💻 Криптоферма', 'crypto')],
         [Markup.button.callback('🚗 Магазин', 'car_shop'), Markup.button.callback('👥 Рефералы', 'referrals')],
-        [Markup.button.callback('💰 Донат', 'donate'), Markup.button.callback('🎁 Бонус', 'daily')],
+        [Markup.button.callback('🪙 Биржа', 'exchange'), Markup.button.callback('🎁 Бонус', 'daily')],
         [Markup.button.callback('📊 Топы', 'top_menu'), Markup.button.callback('ℹ️ Помощь', 'help')]
     ]);
 }
 
-// ========== ОБРАБОТЧИКИ КОМАНД ==========
+// ========== АЛИАСЫ И ОСНОВНЫЕ КОМАНДЫ ==========
 bot.start(async (ctx) => {
     const userId = ctx.from.id;
     const args = ctx.message.text.split(' ');
     const referrerId = args[1] ? parseInt(args[1]) : null;
     
     await registerUser(userId, referrerId);
-    const text = await getProfileKeyboard(userId);
+    const text = await getProfileText(userId);
     
     await ctx.reply(text, { parse_mode: 'Markdown', ...mainKeyboard() });
 });
@@ -500,20 +417,20 @@ bot.on('text', async (ctx) => {
     const text = ctx.message.text.toLowerCase().trim();
     const userId = ctx.from.id;
     
-    // Прямые алиасы (без отправки команд)
+    // Прямые алиасы
     if (text === 'б' || text === 'баланс' || text === 'профиль' || text === 'проф') {
-        const profileText = await getProfileKeyboard(userId);
+        const profileText = await getProfileText(userId);
         await ctx.reply(profileText, { parse_mode: 'Markdown', ...mainKeyboard() });
         return;
     }
     
     if (text === 'гонка' || text === 'race') {
-        const result = await startRace(userId);
-        if (result.error) {
-            await ctx.reply(result.error, { parse_mode: 'Markdown', ...mainKeyboard() });
-        } else {
-            await ctx.reply(result.text, { parse_mode: 'Markdown', ...mainKeyboard() });
+        const user = await getUser(userId);
+        if (!user.car_id || user.car_id === 0) {
+            await ctx.reply('❌ У тебя нет машины! Купи в /магазин', { parse_mode: 'Markdown', ...mainKeyboard() });
+            return;
         }
+        await ctx.reply(`🏁 *ГОНКА*\n\nОжидай команду /race`, { parse_mode: 'Markdown', ...mainKeyboard() });
         return;
     }
     
@@ -528,7 +445,7 @@ bot.on('text', async (ctx) => {
         topText += `\n💻 *ТОП КРИПТОФЕРМ:*\n`;
         for (let i = 0; i < Math.min(5, cryptoTop.length); i++) {
             const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '📌';
-            topText += `${medal} #${cryptoTop[i].id} — ${cryptoTop[i].gpu_count} видеокарт\n`;
+            topText += `${medal} #${cryptoTop[i].id} — ${cryptoTop[i].gpu_count?.toLocaleString() || 2500} видеокарт\n`;
         }
         await ctx.reply(topText, { parse_mode: 'Markdown', ...mainKeyboard() });
         return;
@@ -566,7 +483,7 @@ bot.on('text', async (ctx) => {
         const user = await getUser(userId);
         let refText = `👥 *ПАРТНЁРКА*\n\n`;
         refText += `👤 Приглашено: ${user.referral_count}\n`;
-        refText += `💰 Заработано: ${user.referral_earned.toLocaleString()}\n`;
+        refText += `💰 Заработано: ${user.referral_earned?.toLocaleString() || 0}\n`;
         refText += `🎁 За друга: +5000 ₽\n\n`;
         refText += `✨ Твоя ссылка:\n`;
         refText += `\`https://t.me/${ctx.bot.botInfo.username}?start=${user.id}\``;
@@ -574,7 +491,7 @@ bot.on('text', async (ctx) => {
         return;
     }
     
-    if (text === 'помощь') {
+    if (text === 'помощь' || text === 'help') {
         const isAdmin = await getAdminRole(userId);
         let helpText = `📚 *ПОМОЩЬ*\n\n`;
         helpText += `👤 *ОСНОВНЫЕ:*\n`;
@@ -585,10 +502,17 @@ bot.on('text', async (ctx) => {
         helpText += `• топ — топы\n`;
         helpText += `• рефералы — партнёрка\n`;
         helpText += `• клешни — инвентарь\n`;
-        helpText += `• гет @ник — инфо об игроке\n\n`;
+        helpText += `• гет @ник — инфо об игроке\n`;
+        helpText += `• ферма — криптоферма\n`;
+        helpText += `• собрать — собрать крипту\n`;
+        helpText += `• купить ферма X — купить видеокарты\n`;
+        helpText += `• купить амулет X — купить амулет\n\n`;
         helpText += `🚗 *ГОНКИ:*\n`;
         helpText += `• купить машину — /buycar 1-5\n`;
-        helpText += `• улучшить двигатель — /upgradeengine\n`;
+        helpText += `• улучшить двигатель — /upgradeengine\n\n`;
+        helpText += `🪙 *БИРЖА:*\n`;
+        helpText += `• купить BTC X — купить биткоины\n`;
+        helpText += `• продать BTC X — продать биткоины\n`;
         if (isAdmin) {
             helpText += `\n🛡️ *АДМИН:*\n`;
             helpText += `• агет ID — полная инфо\n`;
@@ -602,200 +526,87 @@ bot.on('text', async (ctx) => {
         await ctx.reply(helpText, { parse_mode: 'Markdown', ...mainKeyboard() });
         return;
     }
-});
-
-// ========== АДМИН КОМАНДЫ ==========
-bot.command(['edit', 'редактировать'], async (ctx) => {
-    const userId = ctx.from.id;
-    if (!await hasPermission(userId, 'edit_profile')) {
-        await ctx.reply('❌ Нет прав!');
+    
+    // КРИПТОФЕРМА
+    if (text === 'ферма') {
+        const user = await getUser(userId);
+        const gpuCount = getGPUCount(user);
+        const hourlyIncome = calculateCryptoIncome(user);
+        const amulets = getFarmAmulets(user);
+        let farmText = `🇯🇵 *КРИПТОФЕРМА*\n\n`;
+        farmText += `📈 Тип - Биткоин ферма 🌐\n`;
+        farmText += `📝 Видеокарты: ${gpuCount.toLocaleString()} шт.\n`;
+        farmText += `💹 Доход: ${hourlyIncome.toLocaleString()} ₿/час\n`;
+        farmText += `💳 На счету: ${user.btc_balance?.toLocaleString() || 0} ₿\n`;
+        farmText += `📀 Амулеты фермы: ${amulets.length}/10\n\n`;
+        farmText += `✨ *Команды:*\n`;
+        farmText += `• собрать — собрать крипту\n`;
+        farmText += `• купить ферма X — купить X видеокарт (${GPU_PRICE.toLocaleString()}₽/шт)\n`;
+        farmText += `• купить амулет X — купить амулет (от 50,000₽)`;
+        await ctx.reply(farmText, { parse_mode: 'Markdown', ...mainKeyboard() });
         return;
     }
     
-    const args = ctx.message.text.split(' ');
-    if (args.length < 4) {
-        await ctx.reply('❌ Использование: /редактировать @ник поле значение\n\nДоступные поля: balance, business_level, gpu_count, car_id, vip_level, equipped_claw, exp, level, rating');
+    if (text === 'собрать') {
+        const result = await collectCrypto(userId);
+        if (result.error) {
+            await ctx.reply(result.error, { parse_mode: 'Markdown', ...mainKeyboard() });
+        } else {
+            await ctx.reply(`🇯🇵 *СБОР КРИПТЫ*\n\n✅ Собрано ${result.income.toLocaleString()} ₿ за ${result.hours} час(ов)!\n💰 Баланс: ${(await getUser(userId)).btc_balance?.toLocaleString() || 0} ₿`, { parse_mode: 'Markdown', ...mainKeyboard() });
+        }
         return;
     }
     
-    const username = args[1].replace('@', '');
-    const field = args[2];
-    const value = args[3];
-    
-    try {
-        const chat = await ctx.telegram.getChat(username);
-        const targetId = chat.id;
+    if (text.startsWith('купить ферма ')) {
+        const amount = parseInt(text.split(' ')[2]);
+        if (isNaN(amount) || amount <= 0) {
+            await ctx.reply('❌ Введите количество видеокарт! Пример: купить ферма 10');
+            return;
+        }
         
-        await setUserField(targetId, field, value);
-        await ctx.reply(`✅ Поле ${field} изменено на ${value} для @${username}`);
-    } catch(e) {
-        await ctx.reply('❌ Пользователь не найден');
+        const user = await getUser(userId);
+        const totalCost = amount * GPU_PRICE;
+        
+        if (user.balance >= totalCost) {
+            await updateBalance(userId, -totalCost);
+            const newGpuCount = (user.gpu_count || BASE_GPU_COUNT) + amount;
+            await setUserField(userId, 'gpu_count', newGpuCount);
+            await ctx.reply(`🇯🇵 *ПОКУПКА ВИДЕОКАРТ*\n\n✅ Вы успешно приобрели ${amount} видеокарт(ы) за ${totalCost.toLocaleString()}₽\n💻 Всего видеокарт: ${newGpuCount.toLocaleString()}`, { parse_mode: 'Markdown', ...mainKeyboard() });
+        } else {
+            await ctx.reply(`❌ Не хватает ${(totalCost - user.balance).toLocaleString()}₽!`, { parse_mode: 'Markdown' });
+        }
+        return;
+    }
+    
+    if (text.startsWith('купить амулет ')) {
+        const amuletId = parseInt(text.split(' ')[2]);
+        const amulet = FARM_AMULETS[amuletId];
+        
+        if (!amulet) {
+            await ctx.reply('❌ Амулет не найден! Доступны номера 1-4');
+            return;
+        }
+        
+        const user = await getUser(userId);
+        const amulets = getFarmAmulets(user);
+        
+        if (amulets.length >= 10) {
+            await ctx.reply('❌ У вас уже максимальное количество амулетов (10)!');
+            return;
+        }
+        
+        if (user.balance >= amulet.price) {
+            await updateBalance(userId, -amulet.price);
+            await addFarmAmulet(userId, amuletId);
+            await ctx.reply(`📀 *ПОКУПКА АМУЛЕТА*\n\n✅ Вы купили ${amulet.name} за ${amulet.price.toLocaleString()}₽\n📈 Доход фермы увеличен!`, { parse_mode: 'Markdown', ...mainKeyboard() });
+        } else {
+            await ctx.reply(`❌ Не хватает ${(amulet.price - user.balance).toLocaleString()}₽!`, { parse_mode: 'Markdown' });
+        }
+        return;
     }
 });
 
-// Остальные команды (get, aget, battle и т.д.) добавлены ранее
-
-// ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ТОПОВ ==========
-async function getRatingTop() {
-    return new Promise((resolve, reject) => {
-        db.all('SELECT id, rating FROM users ORDER BY rating DESC LIMIT 10', (err, rows) => {
-            if (err) reject(err);
-            else resolve(rows);
-        });
-    });
-}
-
-async function getCryptoTop() {
-    return new Promise((resolve, reject) => {
-        db.all('SELECT id, gpu_count FROM users ORDER BY gpu_count DESC LIMIT 10', (err, rows) => {
-            if (err) reject(err);
-            else resolve(rows);
-        });
-    });
-}
-
-// Кнопки
-bot.action('profile', async (ctx) => {
-    const text = await getProfileKeyboard(ctx.from.id);
-    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
-    await ctx.answerCbQuery();
-});
-
-bot.action('race', async (ctx) => {
-    const result = await startRace(ctx.from.id);
-    if (result.error) {
-        await ctx.editMessageText(result.error, { parse_mode: 'Markdown', ...mainKeyboard() });
-    } else {
-        await ctx.editMessageText(result.text, { parse_mode: 'Markdown', ...mainKeyboard() });
-    }
-    await ctx.answerCbQuery();
-});
-
-bot.action('crypto', async (ctx) => {
-    const user = await getUser(ctx.from.id);
-    const gpuCount = getGPUCount(user);
-    const hourlyIncome = calculateCryptoIncome(user);
-    let text = `💻 *КРИПТОФЕРМА*\n\n`;
-    text += `🖥️ Видеокарт: ${gpuCount.toLocaleString()}\n`;
-    text += `💰 Доход в час: ${hourlyIncome.toLocaleString()} монет\n`;
-    text += `📈 С каждым VIP статусом количество видеокарт УДВАИВАЕТСЯ!\n\n`;
-    text += `✨ Твой множитель: x${user.vip_level !== 'none' ? VIP_STATUSES[user.vip_level].gpuMultiplier : 1}`;
-    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
-    await ctx.answerCbQuery();
-});
-
-bot.action('car_shop', async (ctx) => {
-    let text = `🚗 *МАГАЗИН МАШИН*\n\n`;
-    for (const [id, car] of Object.entries(CARS)) {
-        text += `${car.emoji} *${car.name}*\n`;
-        text += `💰 Цена: ${car.price.toLocaleString()} монет\n`;
-        text += `🏎️ Базовая скорость: ${car.speed}\n`;
-        text += `📝 /buycar ${id}\n\n`;
-    }
-    text += `\n⚙️ *УЛУЧШЕНИЯ ДВИГАТЕЛЯ:*\n`;
-    for (const [level, eng] of Object.entries(ENGINE_UPGRADES)) {
-        text += `${eng.name} — +${eng.speedBonus} к скорости, ${eng.cost.toLocaleString()}💰\n`;
-    }
-    text += `\n📝 /upgradeengine — улучшить двигатель`;
-    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
-    await ctx.answerCbQuery();
-});
-
-bot.action('donate', async (ctx) => {
-    let text = `💰 *ДОНАТ СИСТЕМА*\n\n`;
-    for (const [id, item] of Object.entries(DONATE_ITEMS)) {
-        text += `${item.name} — ${item.priceUSD}$\n`;
-        if (item.coins) text += `   🪙 +${item.coins.toLocaleString()} монет\n`;
-        if (item.vip) text += `   👑 VIP статус\n`;
-        if (item.exclusiveClaw) text += `   🦀 Эксклюзивная клешня (+100 к атаке/защите)\n`;
-        if (item.exclusiveCar) text += `   🚗 Эксклюзивная машина (+200 к скорости)\n`;
-    }
-    text += `\n💳 *Для доната напишите:* @admin\n💰 Донат идёт на развитие проекта!`;
-    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
-    await ctx.answerCbQuery();
-});
-
-bot.action('top_menu', async (ctx) => {
-    const ratingTop = await getRatingTop();
-    const cryptoTop = await getCryptoTop();
-    let text = `🏆 *ТОП ИГРОКОВ*\n\n📊 *ТОП ПО РЕЙТИНГУ:*\n`;
-    for (let i = 0; i < Math.min(5, ratingTop.length); i++) {
-        const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '📌';
-        text += `${medal} #${ratingTop[i].id} — ${ratingTop[i].rating} 🏆\n`;
-    }
-    text += `\n💻 *ТОП КРИПТОФЕРМ:*\n`;
-    for (let i = 0; i < Math.min(5, cryptoTop.length); i++) {
-        const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '📌';
-        text += `${medal} #${cryptoTop[i].id} — ${cryptoTop[i].gpu_count.toLocaleString()} видеокарт\n`;
-    }
-    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
-    await ctx.answerCbQuery();
-});
-
-bot.action('referrals', async (ctx) => {
-    const user = await getUser(ctx.from.id);
-    let text = `👥 *ПАРТНЁРКА*\n\n`;
-    text += `👤 Приглашено: ${user.referral_count}\n`;
-    text += `💰 Заработано: ${user.referral_earned.toLocaleString()}\n\n`;
-    text += `✨ Твоя ссылка:\n`;
-    text += `\`https://t.me/${ctx.bot.botInfo.username}?start=${user.id}\``;
-    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
-    await ctx.answerCbQuery();
-});
-
-bot.action('daily', async (ctx) => {
-    await ctx.editMessageText(`🎁 /бонус — ежедневная награда`, { parse_mode: 'Markdown', ...mainKeyboard() });
-    await ctx.answerCbQuery();
-});
-
-bot.action('help', async (ctx) => {
-    await ctx.editMessageText(`📚 /помощь — все команды`, { parse_mode: 'Markdown', ...mainKeyboard() });
-    await ctx.answerCbQuery();
-});
-
-bot.action('business', async (ctx) => {
-    const user = await getUser(ctx.from.id);
-    const business = BUSINESSES[user.business_level];
-    await ctx.editMessageText(`${business.emoji} *${business.name}* (ур.${user.business_level}/10)\n💵 Доход: ${calculateIncome(user).toLocaleString()}\n⬆️ Апгрейд: ${business.upgradeCost?.toLocaleString() || 'MAX'}`, { parse_mode: 'Markdown', ...mainKeyboard() });
-    await ctx.answerCbQuery();
-});
-
-bot.action('battle_menu', async (ctx) => {
-    await ctx.editMessageText(`⚔️ *БИТВА БИЗНЕСОВ*\n\n/битва @username\n\n⚔️ Атака: уровень + клешни + VIP\n🛡️ Защита: улучшения + VIP`, { parse_mode: 'Markdown', ...mainKeyboard() });
-    await ctx.answerCbQuery();
-});
-
-bot.action('claws', async (ctx) => {
-    const claws = await getUserClaws(ctx.from.id);
-    let text = `🦀 *ТВОИ КЛЕШНИ*\n\n`;
-    if (claws.length === 0) text += `Нет клешней. /магазин`;
-    else for (const claw of claws) text += `${CLAWS[claw.claw_id].name} x${claw.quantity}\n`;
-    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
-    await ctx.answerCbQuery();
-});
-
-// Заглушки для команд, которые нужно добавить
-bot.command(['battle', 'битва'], async (ctx) => {
-    await ctx.reply('⚔️ Битва бизнесов (в разработке)');
-});
-
-bot.command(['buycar'], async (ctx) => {
-    await ctx.reply('🚗 Покупка машины (в разработке)');
-});
-
-bot.command(['upgradeengine'], async (ctx) => {
-    await ctx.reply('⚙️ Улучшение двигателя (в разработке)');
-});
-
-bot.command(['get', 'гет'], async (ctx) => {
-    await ctx.reply('🔍 /get @username — информация об игроке (в разработке)');
-});
-
-bot.command(['aget', 'агет'], async (ctx) => {
-    await ctx.reply('🔒 /aget ID — админ-информация (в разработке)');
-});
-
-// ========== КОМАНДА GET (КРАСИВАЯ ИНФОРМАЦИЯ ОБ ИГРОКЕ) ==========
+// ========== КОМАНДА GET ==========
 bot.command(['get', 'гет'], async (ctx) => {
     const args = ctx.message.text.split(' ');
     if (args.length < 2) {
@@ -827,6 +638,7 @@ bot.command(['get', 'гет'], async (ctx) => {
     const role = await getAdminRole(user.user_id);
     const roleName = role ? ADMIN_ROLES[role]?.name || '👤 Игрок' : '👤 Игрок';
     const car = user.car_id ? CARS[user.car_id] : null;
+    const gpuCount = getGPUCount(user);
     
     let text = `🌟━━━━━━━━━━━━━━━━━━━━━━🌟\n`;
     text += `         👤 *ИНФОРМАЦИЯ ОБ ИГРОКЕ* 👤\n`;
@@ -837,11 +649,12 @@ bot.command(['get', 'гет'], async (ctx) => {
     text += `│ 📊 Уровень: ${user.business_level}/10\n`;
     text += `├─────────────────────────┤\n`;
     text += `│ 💰 Баланс: ${user.balance.toLocaleString()} ₽\n`;
+    text += `│ ₿ Биткоин: ${user.btc_balance?.toLocaleString() || 0}\n`;
     text += `│ 🎚️ Уровень игрока: ${user.level}\n`;
     text += `│ 📊 Рейтинг: ${user.rating}\n`;
     text += `├─────────────────────────┤\n`;
-    text += `│ ⚔️ Атака: ${calculateAttack(user)}\n`;
-    text += `│ 🛡️ Защита: ${calculateDefense(user)}\n`;
+    text += `│ 💻 Видеокарт: ${gpuCount.toLocaleString()}\n`;
+    text += `│ 💰 Криптодоход/час: ${calculateCryptoIncome(user).toLocaleString()} ₿\n`;
     text += `├─────────────────────────┤\n`;
     text += `│ ${car ? `${car.emoji} Машина: ${car.name}` : '🚗 Машины нет'}\n`;
     text += `│ 🏁 Побед в гонках: ${user.races_won || 0}\n`;
@@ -855,7 +668,7 @@ bot.command(['get', 'гет'], async (ctx) => {
     await ctx.reply(text, { parse_mode: 'Markdown' });
 });
 
-// ========== КОМАНДА AGET (АДМИНСКАЯ ПОЛНАЯ ИНФОРМАЦИЯ) ==========
+// ========== КОМАНДА AGET ==========
 bot.command(['aget', 'агет'], async (ctx) => {
     const userId = ctx.from.id;
     if (!await hasPermission(userId, 'help_users')) {
@@ -879,6 +692,7 @@ bot.command(['aget', 'агет'], async (ctx) => {
     
     const role = await getAdminRole(user.user_id);
     const car = user.car_id ? CARS[user.car_id] : null;
+    const amulets = getFarmAmulets(user);
     
     let text = `🔒━━━━━━━━━━━━━━━━━━━━━━🔒\n`;
     text += `       *АДМИН-ИНФОРМАЦИЯ*       \n`;
@@ -887,10 +701,12 @@ bot.command(['aget', 'агет'], async (ctx) => {
     text += `│ 🆔 ID: #${user.id}\n`;
     text += `│ 🆔 Telegram: ${user.user_id}\n`;
     text += `│ 💰 Баланс: ${user.balance.toLocaleString()}\n`;
+    text += `│ ₿ Биткоин: ${user.btc_balance?.toLocaleString() || 0}\n`;
     text += `│ 🏪 Бизнес: ${user.business_level}/10\n`;
     text += `│ 📊 Рейтинг: ${user.rating}\n`;
     text += `├─────────────────────────┤\n`;
     text += `│ 💻 Видеокарт: ${user.gpu_count?.toLocaleString() || 2500}\n`;
+    text += `│ 📀 Амулетов: ${amulets.length}/10\n`;
     text += `│ ${car ? `${car.emoji} Машина: ${car.name}` : '🚗 Машины нет'}\n`;
     text += `│ ⚙️ Уровень двигателя: ${user.car_engine_level || 0}\n`;
     text += `├─────────────────────────┤\n`;
@@ -911,11 +727,11 @@ bot.command(['aget', 'агет'], async (ctx) => {
     await ctx.reply(text, { parse_mode: 'Markdown' });
 });
 
-// ========== КОМАНДА БИТВА БИЗНЕСОВ ==========
+// ========== БИТВА БИЗНЕСОВ ==========
 bot.command(['battle', 'битва'], async (ctx) => {
     const args = ctx.message.text.split(' ');
     if (args.length < 2) {
-        await ctx.reply('⚔️ *БИТВА БИЗНЕСОВ*\n\nПравила:\n• Атакуй бизнес соперника\n• Победа = кража денег + понижение уровня\n• Поражение = потеря денег\n• Рейтинг меняется\n\nИспользование: /битва @username', { parse_mode: 'Markdown' });
+        await ctx.reply('⚔️ *БИТВА БИЗНЕСОВ*\n\nИспользование: /битва @username', { parse_mode: 'Markdown' });
         return;
     }
     
@@ -939,50 +755,26 @@ bot.command(['battle', 'битва'], async (ctx) => {
             return;
         }
         
-        if (defender.business_level < 3) {
-            await ctx.reply('❌ У соперника слишком слабый бизнес для битвы!');
-            return;
-        }
-        
         const attackPower = calculateAttack(attacker);
         const defensePower = calculateDefense(defender);
-        
         const winChance = attackPower / (attackPower + defensePower) * 100;
         const win = Math.random() * 100 < winChance;
         
         if (win) {
             const stolenMoney = Math.floor(defender.balance * 0.15);
-            const stolenBusiness = Math.floor(defender.business_level * 0.3);
-            
             await updateBalance(userId, stolenMoney);
             await updateBalance(targetId, -stolenMoney);
             await updateRating(userId, 15);
             await updateRating(targetId, -10);
             
-            if (stolenBusiness > 0 && defender.business_level > 1) {
-                await setUserField(targetId, 'business_level', Math.max(1, defender.business_level - stolenBusiness));
-                await setUserField(userId, 'business_battles_won', (attacker.business_battles_won || 0) + 1);
-            }
-            
-            let text = `🏆 *БИТВА БИЗНЕСОВ: ПОБЕДА!* 🏆\n\n`;
-            text += `💪 Ваша сила: ${attackPower} | 🛡️ Защита врага: ${defensePower}\n`;
-            text += `💰 Украдено денег: ${stolenMoney.toLocaleString()}\n`;
-            if (stolenBusiness > 0) text += `📉 Уровень врага понижен на ${stolenBusiness}\n`;
-            text += `📊 Рейтинг: +15\n`;
-            
-            await ctx.reply(text, { parse_mode: 'Markdown', ...mainKeyboard() });
+            await ctx.reply(`🏆 *ПОБЕДА!* 🏆\n\n💰 Украдено: ${stolenMoney.toLocaleString()} ₽\n📊 Рейтинг: +15`, { parse_mode: 'Markdown', ...mainKeyboard() });
         } else {
             const lostMoney = Math.floor(attacker.balance * 0.1);
             await updateBalance(userId, -lostMoney);
             await updateRating(userId, -10);
             await updateRating(targetId, 5);
             
-            let text = `💀 *БИТВА БИЗНЕСОВ: ПОРАЖЕНИЕ!* 💀\n\n`;
-            text += `💪 Ваша сила: ${attackPower} | 🛡️ Защита врага: ${defensePower}\n`;
-            text += `💔 Потеряно денег: ${lostMoney.toLocaleString()}\n`;
-            text += `📊 Рейтинг: -10\n`;
-            
-            await ctx.reply(text, { parse_mode: 'Markdown', ...mainKeyboard() });
+            await ctx.reply(`💀 *ПОРАЖЕНИЕ!* 💀\n\n💔 Потеряно: ${lostMoney.toLocaleString()} ₽\n📊 Рейтинг: -10`, { parse_mode: 'Markdown', ...mainKeyboard() });
         }
         
     } catch (e) {
@@ -990,7 +782,7 @@ bot.command(['battle', 'битва'], async (ctx) => {
     }
 });
 
-// ========== КОМАНДА ПОКУПКИ МАШИНЫ ==========
+// ========== ПОКУПКА МАШИНЫ ==========
 bot.command(['buycar', 'купитьмашину'], async (ctx) => {
     const args = ctx.message.text.split(' ');
     if (args.length < 2) {
@@ -1015,26 +807,26 @@ bot.command(['buycar', 'купитьмашину'], async (ctx) => {
     const user = await getUser(userId);
     
     if (user.car_id && user.car_id !== 0) {
-        await ctx.reply('❌ У тебя уже есть машина! Продай старую перед покупкой новой.');
+        await ctx.reply('❌ У тебя уже есть машина!');
         return;
     }
     
     if (user.balance >= car.price) {
         await updateBalance(userId, -car.price);
         await setUserField(userId, 'car_id', carId);
-        await ctx.reply(`✅ *Куплено!* ${car.emoji} ${car.name}\n💰 Остаток: ${(user.balance - car.price).toLocaleString()} монет\n🏎️ Скорость: ${car.speed}`, { parse_mode: 'Markdown', ...mainKeyboard() });
+        await ctx.reply(`✅ *Куплено!* ${car.emoji} ${car.name}\n💰 Остаток: ${(user.balance - car.price).toLocaleString()} ₽`, { parse_mode: 'Markdown', ...mainKeyboard() });
     } else {
-        await ctx.reply(`❌ Не хватает ${(car.price - user.balance).toLocaleString()} монет!`, { parse_mode: 'Markdown' });
+        await ctx.reply(`❌ Не хватает ${(car.price - user.balance).toLocaleString()} ₽!`, { parse_mode: 'Markdown' });
     }
 });
 
-// ========== КОМАНДА УЛУЧШЕНИЯ ДВИГАТЕЛЯ ==========
+// ========== УЛУЧШЕНИЕ ДВИГАТЕЛЯ ==========
 bot.command(['upgradeengine', 'улучшитьдвигатель'], async (ctx) => {
     const userId = ctx.from.id;
     const user = await getUser(userId);
     
     if (!user.car_id || user.car_id === 0) {
-        await ctx.reply('❌ У тебя нет машины! Купи сначала: /buycar');
+        await ctx.reply('❌ У тебя нет машины!');
         return;
     }
     
@@ -1043,24 +835,20 @@ bot.command(['upgradeengine', 'улучшитьдвигатель'], async (ctx)
     const upgrade = ENGINE_UPGRADES[nextLevel];
     
     if (!upgrade) {
-        await ctx.reply('❌ Максимальный уровень двигателя достигнут!');
+        await ctx.reply('❌ Максимальный уровень!');
         return;
     }
     
     if (user.balance >= upgrade.cost) {
         await updateBalance(userId, -upgrade.cost);
         await setUserField(userId, 'car_engine_level', nextLevel);
-        
-        const car = CARS[user.car_id];
-        const newSpeed = car.speed + upgrade.speedBonus;
-        
-        await ctx.reply(`⚙️ *ДВИГАТЕЛЬ УЛУЧШЕН!*\n\n🔧 ${upgrade.name}\n🏎️ Скорость: ${car.speed} → ${newSpeed}\n💰 Стоимость: ${upgrade.cost.toLocaleString()} монет`, { parse_mode: 'Markdown', ...mainKeyboard() });
+        await ctx.reply(`⚙️ *ДВИГАТЕЛЬ УЛУЧШЕН!*\n\n🔧 ${upgrade.name}\n💰 Стоимость: ${upgrade.cost.toLocaleString()} ₽`, { parse_mode: 'Markdown', ...mainKeyboard() });
     } else {
-        await ctx.reply(`❌ Не хватает ${(upgrade.cost - user.balance).toLocaleString()} монет!`, { parse_mode: 'Markdown' });
+        await ctx.reply(`❌ Не хватает ${(upgrade.cost - user.balance).toLocaleString()} ₽!`, { parse_mode: 'Markdown' });
     }
 });
 
-// ========== КОМАНДА ВЫДАТЬ МОНЕТЫ (АДМИН) ==========
+// ========== АДМИН КОМАНДЫ ==========
 bot.command(['give', 'выдать'], async (ctx) => {
     const userId = ctx.from.id;
     if (!await hasPermission(userId, 'give_money')) {
@@ -1078,23 +866,20 @@ bot.command(['give', 'выдать'], async (ctx) => {
     const amount = parseInt(args[2]);
     
     if (isNaN(amount) || amount <= 0) {
-        await ctx.reply('❌ Сумма должна быть положительным числом!');
+        await ctx.reply('❌ Сумма должна быть числом!');
         return;
     }
     
     try {
         const chat = await ctx.telegram.getChat(username);
         const targetId = chat.id;
-        
         await updateBalance(targetId, amount);
-        await ctx.reply(`✅ Выдано ${amount.toLocaleString()} монет игроку @${username}!`);
-        await ctx.telegram.sendMessage(targetId, `🎁 *Вам выдали подарок!*\n💰 +${amount.toLocaleString()} монет`, { parse_mode: 'Markdown' });
+        await ctx.reply(`✅ Выдано ${amount.toLocaleString()} монет @${username}!`);
     } catch (e) {
         await ctx.reply('❌ Пользователь не найден!');
     }
 });
 
-// ========== КОМАНДА ЗАБАНИТЬ (АДМИН) ==========
 bot.command(['ban', 'забанить'], async (ctx) => {
     const userId = ctx.from.id;
     if (!await hasPermission(userId, 'ban')) {
@@ -1104,26 +889,22 @@ bot.command(['ban', 'забанить'], async (ctx) => {
     
     const args = ctx.message.text.split(' ');
     if (args.length < 2) {
-        await ctx.reply('❌ Использование: /забанить @username [причина]');
+        await ctx.reply('❌ Использование: /забанить @username');
         return;
     }
     
     const username = args[1].replace('@', '');
-    const reason = args.slice(2).join(' ') || 'Без причины';
     
     try {
         const chat = await ctx.telegram.getChat(username);
         const targetId = chat.id;
-        
         await setUserField(targetId, 'banned', 1);
-        await ctx.reply(`✅ Игрок @${username} забанен!\n📝 Причина: ${reason}`);
-        await ctx.telegram.sendMessage(targetId, `⚠️ *ВЫ ЗАБАНЕНЫ!*\nПричина: ${reason}\nОбратитесь к администрации.`, { parse_mode: 'Markdown' });
+        await ctx.reply(`✅ Игрок @${username} забанен!`);
     } catch (e) {
         await ctx.reply('❌ Пользователь не найден!');
     }
 });
 
-// ========== КОМАНДА РАЗБАНИТЬ (АДМИН) ==========
 bot.command(['unban', 'разбанить'], async (ctx) => {
     const userId = ctx.from.id;
     if (!await hasPermission(userId, 'unban')) {
@@ -1142,16 +923,13 @@ bot.command(['unban', 'разбанить'], async (ctx) => {
     try {
         const chat = await ctx.telegram.getChat(username);
         const targetId = chat.id;
-        
         await setUserField(targetId, 'banned', 0);
         await ctx.reply(`✅ Игрок @${username} разбанен!`);
-        await ctx.telegram.sendMessage(targetId, `✅ *ВЫ РАЗБАНЕНЫ!*\nДобро пожаловать обратно!`, { parse_mode: 'Markdown' });
     } catch (e) {
         await ctx.reply('❌ Пользователь не найден!');
     }
 });
 
-// ========== КОМАНДА ОБЪЯВЛЕНИЕ (АДМИН) ==========
 bot.command(['announce', 'объявить'], async (ctx) => {
     const userId = ctx.from.id;
     if (!await hasPermission(userId, 'announce')) {
@@ -1161,14 +939,9 @@ bot.command(['announce', 'объявить'], async (ctx) => {
     
     const text = ctx.message.text.split(' ').slice(1).join(' ');
     if (!text) {
-        await ctx.reply('❌ Использование: /объявить текст объявления');
+        await ctx.reply('❌ Использование: /объявить текст');
         return;
     }
-    
-    const admin = await getUser(userId);
-    const gameId = await getGameId(userId);
-    
-    const announce = `📢 *ОБЪЯВЛЕНИЕ* 📢\n\n${text}\n\n— Админ #${gameId}`;
     
     const users = await new Promise((resolve) => {
         db.all('SELECT user_id FROM users', (err, rows) => resolve(rows || []));
@@ -1177,7 +950,7 @@ bot.command(['announce', 'объявить'], async (ctx) => {
     let sent = 0;
     for (const user of users) {
         try {
-            await ctx.telegram.sendMessage(user.user_id, announce, { parse_mode: 'Markdown' });
+            await ctx.telegram.sendMessage(user.user_id, `📢 *ОБЪЯВЛЕНИЕ*\n\n${text}`, { parse_mode: 'Markdown' });
             sent++;
         } catch (e) {}
     }
@@ -1185,7 +958,6 @@ bot.command(['announce', 'объявить'], async (ctx) => {
     await ctx.reply(`✅ Объявление отправлено ${sent} игрокам!`);
 });
 
-// ========== КОМАНДА НАЗНАЧИТЬ АДМИНА (АДМИН) ==========
 bot.command(['setadmin', 'назначить'], async (ctx) => {
     const userId = ctx.from.id;
     if (!await hasPermission(userId, 'set_admin')) {
@@ -1195,7 +967,7 @@ bot.command(['setadmin', 'назначить'], async (ctx) => {
     
     const args = ctx.message.text.split(' ');
     if (args.length < 3) {
-        await ctx.reply('❌ Использование: /назначить @username роль\n📌 Роли: owner, vice_owner, developer, head_admin, vice_admin, moderator, event_manager');
+        await ctx.reply('❌ Использование: /назначить @username роль');
         return;
     }
     
@@ -1203,97 +975,212 @@ bot.command(['setadmin', 'назначить'], async (ctx) => {
     const role = args[2];
     
     if (!ADMIN_ROLES[role]) {
-        await ctx.reply('❌ Неверная роль! Доступные: owner, vice_owner, developer, head_admin, vice_admin, moderator, event_manager');
+        await ctx.reply('❌ Неверная роль!');
         return;
     }
     
     try {
         const chat = await ctx.telegram.getChat(username);
         const targetId = chat.id;
-        
-        db.run('INSERT OR REPLACE INTO admins (user_id, role, appointed_by, appointed_at) VALUES (?, ?, ?, datetime("now"))',
-            [targetId, role, userId]);
-        
-        await ctx.reply(`✅ Игрок @${username} назначен на роль ${ADMIN_ROLES[role].name}!`);
-        await ctx.telegram.sendMessage(targetId, `👑 *Вам назначена роль!*\nВаша роль: ${ADMIN_ROLES[role].name}\nИспользуйте /помощь для просмотра команд.`, { parse_mode: 'Markdown' });
+        db.run('INSERT OR REPLACE INTO admins (user_id, role, appointed_by, appointed_at) VALUES (?, ?, ?, datetime("now"))', [targetId, role, userId]);
+        await ctx.reply(`✅ @${username} назначен на роль ${ADMIN_ROLES[role].name}!`);
     } catch (e) {
         await ctx.reply('❌ Пользователь не найден!');
     }
 });
 
-// ========== КОМАНДА ВЫДАТЬ VIP (АДМИН) ==========
-bot.command(['setvip', 'выдатьвип'], async (ctx) => {
+bot.command(['edit', 'редактировать'], async (ctx) => {
     const userId = ctx.from.id;
-    if (!await hasPermission(userId, 'set_vip')) {
+    if (!await hasPermission(userId, 'edit_profile')) {
         await ctx.reply('❌ Нет прав!');
         return;
     }
     
     const args = ctx.message.text.split(' ');
-    if (args.length < 3) {
-        await ctx.reply('❌ Использование: /выдатьвип @username статус\n📌 Статусы: bronze, silver, gold, platinum, diamond');
+    if (args.length < 4) {
+        await ctx.reply('❌ Использование: /редактировать @ник поле значение\nДоступные поля: balance, business_level, gpu_count, btc_balance, car_id, vip_level');
         return;
     }
     
     const username = args[1].replace('@', '');
-    const vipLevel = args[2];
-    
-    if (!VIP_STATUSES[vipLevel]) {
-        await ctx.reply('❌ Неверный статус! Доступные: bronze, silver, gold, platinum, diamond');
-        return;
-    }
+    const field = args[2];
+    const value = args[3];
     
     try {
         const chat = await ctx.telegram.getChat(username);
         const targetId = chat.id;
-        
-        await setUserField(targetId, 'vip_level', vipLevel);
-        
-        // Обновляем количество видеокарт
-        const user = await getUser(targetId);
-        const newGpuCount = BASE_GPU_COUNT * VIP_STATUSES[vipLevel].gpuMultiplier;
-        await setUserField(targetId, 'gpu_count', newGpuCount);
-        
-        await ctx.reply(`✅ Игроку @${username} выдан VIP статус ${VIP_STATUSES[vipLevel].name}!`);
-        await ctx.telegram.sendMessage(targetId, `👑 *Вам выдан VIP статус!*\nСтатус: ${VIP_STATUSES[vipLevel].name}\n💻 Количество видеокарт увеличено до ${newGpuCount.toLocaleString()}!`, { parse_mode: 'Markdown' });
+        await setUserField(targetId, field, value);
+        await ctx.reply(`✅ Поле ${field} изменено на ${value} для @${username}`);
     } catch (e) {
         await ctx.reply('❌ Пользователь не найден!');
     }
 });
 
-// ========== КОМАНДА АДМИНЫ (СПИСОК АДМИНОВ) ==========
-bot.command(['admins', 'админы'], async (ctx) => {
-    const userId = ctx.from.id;
-    if (!await hasPermission(userId, 'help_users')) return;
-    
-    const admins = await new Promise((resolve) => {
-        db.all('SELECT user_id, role FROM admins', (err, rows) => resolve(rows || []));
+// ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
+async function getRatingTop() {
+    return new Promise((resolve, reject) => {
+        db.all('SELECT id, rating FROM users ORDER BY rating DESC LIMIT 10', (err, rows) => {
+            if (err) reject(err);
+            else resolve(rows);
+        });
     });
-    
-    let text = `👥━━━━━━━━━━━━━━━━━━━━━━👥\n`;
-    text += `        *СПИСОК АДМИНОВ*        \n`;
-    text += `👥━━━━━━━━━━━━━━━━━━━━━━👥\n\n`;
-    
-    for (const admin of admins) {
-        const roleData = ADMIN_ROLES[admin.role];
-        text += `┌─────────────────────────┐\n`;
-        text += `│ ${roleData?.name || admin.role}\n`;
-        text += `│ 🆔 ${admin.user_id}\n`;
-        text += `└─────────────────────────┘\n`;
+}
+
+async function getCryptoTop() {
+    return new Promise((resolve, reject) => {
+        db.all('SELECT id, gpu_count FROM users ORDER BY gpu_count DESC LIMIT 10', (err, rows) => {
+            if (err) reject(err);
+            else resolve(rows);
+        });
+    });
+}
+
+function calculateAttack(user) {
+    let attack = BUSINESSES[user.business_level].attack + Math.floor(user.rating / 100);
+    if (user.hacker) attack += 30;
+    if (user.equipped_claw && CLAWS[user.equipped_claw]) {
+        attack += CLAWS[user.equipped_claw].attackBonus;
     }
-    
-    await ctx.reply(text, { parse_mode: 'Markdown' });
+    if (user.vip_level !== 'none' && VIP_STATUSES[user.vip_level]) {
+        attack += VIP_STATUSES[user.vip_level].bonusAttack;
+    }
+    return attack;
+}
+
+function calculateDefense(user) {
+    let defense = BUSINESSES[user.business_level].defense;
+    if (user.manager) defense += 5;
+    if (user.security) defense += 20;
+    if (user.armored) defense += 40;
+    if (user.equipped_claw && CLAWS[user.equipped_claw]) {
+        defense += CLAWS[user.equipped_claw].defenseBonus;
+    }
+    if (user.vip_level !== 'none' && VIP_STATUSES[user.vip_level]) {
+        defense += VIP_STATUSES[user.vip_level].bonusDefense;
+    }
+    return defense;
+}
+
+// ========== КНОПКИ ==========
+bot.action('profile', async (ctx) => {
+    const text = await getProfileText(ctx.from.id);
+    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
+    await ctx.answerCbQuery();
+});
+
+bot.action('business', async (ctx) => {
+    const user = await getUser(ctx.from.id);
+    const business = BUSINESSES[user.business_level];
+    await ctx.editMessageText(`${business.emoji} *${business.name}* (ур.${user.business_level}/10)\n💵 Доход: ${calculateIncome(user).toLocaleString()}`, { parse_mode: 'Markdown', ...mainKeyboard() });
+    await ctx.answerCbQuery();
+});
+
+bot.action('crypto', async (ctx) => {
+    const user = await getUser(ctx.from.id);
+    const gpuCount = getGPUCount(user);
+    const hourlyIncome = calculateCryptoIncome(user);
+    const amulets = getFarmAmulets(user);
+    let text = `🇯🇵 *КРИПТОФЕРМА*\n\n`;
+    text += `📝 Видеокарты: ${gpuCount.toLocaleString()} шт.\n`;
+    text += `💹 Доход: ${hourlyIncome.toLocaleString()} ₿/час\n`;
+    text += `💳 На счету: ${user.btc_balance?.toLocaleString() || 0} ₿\n`;
+    text += `📀 Амулеты: ${amulets.length}/10\n\n`;
+    text += `✨ /собрать — собрать крипту\n`;
+    text += `✨ /купить ферма X — купить видеокарты`;
+    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
+    await ctx.answerCbQuery();
+});
+
+bot.action('car_shop', async (ctx) => {
+    let text = `🚗 *МАГАЗИН МАШИН*\n\n`;
+    for (const [id, car] of Object.entries(CARS)) {
+        text += `${car.emoji} ${car.name} — ${car.price.toLocaleString()}💰\n`;
+    }
+    text += `\n📝 /buycar 1-5`;
+    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
+    await ctx.answerCbQuery();
+});
+
+bot.action('referrals', async (ctx) => {
+    const user = await getUser(ctx.from.id);
+    let text = `👥 *ПАРТНЁРКА*\n\n`;
+    text += `👤 Приглашено: ${user.referral_count}\n`;
+    text += `💰 Заработано: ${user.referral_earned?.toLocaleString() || 0}\n\n`;
+    text += `✨ Твоя ссылка:\n`;
+    text += `\`https://t.me/${ctx.bot.botInfo.username}?start=${user.id}\``;
+    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
+    await ctx.answerCbQuery();
+});
+
+bot.action('exchange', async (ctx) => {
+    let text = `🪙 *КОСМИЧЕСКАЯ БИРЖА*\n\n`;
+    text += `₿ Биткоин: ${EXCHANGE_RATES.btc.price.toLocaleString()} ₽\n`;
+    text += `Ξ Эфириум: ${EXCHANGE_RATES.eth.price.toLocaleString()} ₽\n`;
+    text += `🐶 Догикоин: ${EXCHANGE_RATES.doge.price.toLocaleString()} ₽\n\n`;
+    text += `📝 Команды:\n`;
+    text += `• купить BTC 10 — купить 10 BTC\n`;
+    text += `• продать BTC 10 — продать 10 BTC`;
+    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
+    await ctx.answerCbQuery();
+});
+
+bot.action('daily', async (ctx) => {
+    await ctx.editMessageText(`🎁 /бонус — ежедневная награда`, { parse_mode: 'Markdown', ...mainKeyboard() });
+    await ctx.answerCbQuery();
+});
+
+bot.action('top_menu', async (ctx) => {
+    const ratingTop = await getRatingTop();
+    const cryptoTop = await getCryptoTop();
+    let text = `🏆 *ТОП ИГРОКОВ*\n\n📊 *ТОП ПО РЕЙТИНГУ:*\n`;
+    for (let i = 0; i < Math.min(5, ratingTop.length); i++) {
+        const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '📌';
+        text += `${medal} #${ratingTop[i].id} — ${ratingTop[i].rating} 🏆\n`;
+    }
+    text += `\n💻 *ТОП КРИПТОФЕРМ:*\n`;
+    for (let i = 0; i < Math.min(5, cryptoTop.length); i++) {
+        const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '📌';
+        text += `${medal} #${cryptoTop[i].id} — ${cryptoTop[i].gpu_count?.toLocaleString() || 2500} видеокарт\n`;
+    }
+    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
+    await ctx.answerCbQuery();
+});
+
+bot.action('help', async (ctx) => {
+    await ctx.editMessageText(`📚 /помощь — все команды`, { parse_mode: 'Markdown', ...mainKeyboard() });
+    await ctx.answerCbQuery();
+});
+
+bot.action('battle_menu', async (ctx) => {
+    await ctx.editMessageText(`⚔️ *БИТВА БИЗНЕСОВ*\n\n/битва @username`, { parse_mode: 'Markdown', ...mainKeyboard() });
+    await ctx.answerCbQuery();
+});
+
+bot.action('race', async (ctx) => {
+    const user = await getUser(ctx.from.id);
+    if (!user.car_id || user.car_id === 0) {
+        await ctx.editMessageText(`❌ У тебя нет машины! Купи в /магазин`, { parse_mode: 'Markdown', ...mainKeyboard() });
+    } else {
+        await ctx.editMessageText(`🏁 *ГОНКА*\n\nОжидай команду /race`, { parse_mode: 'Markdown', ...mainKeyboard() });
+    }
+    await ctx.answerCbQuery();
+});
+
+bot.action('claws', async (ctx) => {
+    const claws = await getUserClaws(ctx.from.id);
+    let text = `🦀 *ТВОИ КЛЕШНИ*\n\n`;
+    if (claws.length === 0) text += `Нет клешней`;
+    else for (const claw of claws) text += `${CLAWS[claw.claw_id].name} x${claw.quantity}\n`;
+    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
+    await ctx.answerCbQuery();
 });
 
 // ========== ЗАПУСК ==========
 bot.launch().then(() => {
     console.log('🌟 CRYPTO EMPIRE ЗАПУЩЕН!');
-    console.log('✅ Алиасы работают: "б" сразу показывает профиль');
-    console.log('🏁 Гонки готовы!');
-    console.log('💻 Криптоферма активна');
-    console.log('💰 Донат система готова');
-    console.log('👑 Редактирование профилей для админов');
-    console.log('🚗 Машины и улучшения');
+    console.log('✅ Все системы активны: Криптоферма, Амулеты, Биржа');
+    console.log('👑 Админ-команды работают');
+    console.log('🚗 Гонки и машины готовы');
 });
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
