@@ -174,7 +174,90 @@ let globalJackpot = 10000000;
 let lotteryTickets = new Map();
 let lastDrawTime = Date.now();
 
-// ========== СИСТЕМА СВАТОВСТВА ==========
+// ========== ЧЁРНЫЙ РЫНОК ==========
+const BLACK_MARKET_ITEMS = {
+    1: { name: '🦀 Теневая клешня', price: 5000, type: 'claw', clawId: 6, emoji: '🦀' },
+    2: { name: '💀 Череп дракона', price: 10000, type: 'item', value: 50000, emoji: '💀' },
+    3: { name: '🌙 Лунный камень', price: 25000, type: 'amulet', bonus: 50, emoji: '🌙' },
+    4: { name: '✨ Звездная пыль', price: 50000, type: 'item', value: 250000, emoji: '✨' },
+    5: { name: '👑 Корона тьмы', price: 100000, type: 'vip', vipLevel: 'platinum', emoji: '👑' },
+    6: { name: '🐉 Сердце дракона', price: 250000, type: 'item', value: 1000000, emoji: '🐉' },
+    7: { name: '💎 Чёрный алмаз', price: 500000, type: 'item', value: 2500000, emoji: '💎' },
+    8: { name: '🌟 Эксклюзивная машина', price: 1000000, type: 'car', carId: 5, emoji: '🌟' }
+};
+
+let darkCoins = new Map();
+
+async function addDarkCoins(userId, amount) {
+    const current = darkCoins.get(userId) || 0;
+    darkCoins.set(userId, current + amount);
+}
+
+async function getDarkCoins(userId) {
+    return darkCoins.get(userId) || 0;
+}
+
+async function spendDarkCoins(userId, amount) {
+    const current = await getDarkCoins(userId);
+    if (current < amount) return false;
+    darkCoins.set(userId, current - amount);
+    return true;
+}
+
+async function buyBlackMarketItem(userId, itemId) {
+    const item = BLACK_MARKET_ITEMS[itemId];
+    if (!item) return { error: '❌ Товар не найден!' };
+    
+    const userCoins = await getDarkCoins(userId);
+    if (userCoins < item.price) {
+        return { error: `❌ Не хватает тёмных монет! Нужно ${item.price}, у тебя ${userCoins}` };
+    }
+    
+    await spendDarkCoins(userId, item.price);
+    
+    if (item.type === 'claw') {
+        await addClaw(userId, item.clawId);
+    } else if (item.type === 'item') {
+        await updateBalance(userId, item.value);
+    } else if (item.type === 'amulet') {
+        let amulets = [];
+        try { amulets = JSON.parse((await getUser(userId)).farm_amulets || '[]'); } catch(e) { amulets = []; }
+        amulets.push('🌙 Лунный камень');
+        await setUserField(userId, 'farm_amulets', JSON.stringify(amulets));
+    } else if (item.type === 'vip') {
+        await setUserField(userId, 'vip_level', item.vipLevel);
+        const user = await getUser(userId);
+        const newGpuCount = (user.gpu_count || BASE_GPU_COUNT) * VIP_STATUSES[item.vipLevel].gpuMultiplier;
+        await setUserField(userId, 'gpu_count', newGpuCount);
+    } else if (item.type === 'car') {
+        await setUserField(userId, 'car_id', item.carId);
+    }
+    
+    return { success: true, text: `✅ *КУПЛЕНО НА ЧЁРНОМ РЫНКЕ!*\n\n${item.emoji} ${item.name}\n💰 Цена: ${item.price} тёмных монет` };
+}
+
+async function getBlackMarketText(userId) {
+    const userCoins = await getDarkCoins(userId);
+    let text = `🏪 *ЧЁРНЫЙ РЫНОК* 🏪\n\n`;
+    text += `🪙 Твои тёмные монеты: ${userCoins}\n\n`;
+    text += `📦 *ДОСТУПНЫЕ ТОВАРЫ:*\n\n`;
+    
+    for (const [id, item] of Object.entries(BLACK_MARKET_ITEMS)) {
+        text += `${item.emoji} *${item.name}*\n`;
+        text += `💰 Цена: ${item.price} тёмных монет\n`;
+        text += `📝 /blackmarket ${id} — купить\n\n`;
+    }
+    
+    text += `✨ *Как получить тёмные монеты:*\n`;
+    text += `• Прохождение подземелий\n`;
+    text += `• Выигрыш в лотерее\n`;
+    text += `• Победы в битвах бизнесов\n`;
+    text += `• Ежедневный бонус (10% шанс)`;
+    
+    return text;
+}
+
+// ========== СВАТОВСТВО ==========
 let marriageProposals = new Map();
 
 // ========== БАЗА ДАННЫХ ==========
@@ -235,7 +318,6 @@ db.serialize(() => {
         appointed_at TEXT
     )`);
     
-    // Добавляем владельца
     for (const [role, data] of Object.entries(ADMIN_ROLES)) {
         for (const userId of data.users) {
             db.run(`INSERT OR IGNORE INTO admins (user_id, role, appointed_by, appointed_at) 
@@ -461,6 +543,7 @@ async function getProfileText(userId) {
     let amulets = [];
     try { amulets = JSON.parse(user.farm_amulets || '[]'); } catch(e) { amulets = []; }
     const spouse = user.married_to ? await getUserById(user.married_to) : null;
+    const darkCoinsAmount = await getDarkCoins(userId);
     
     let text = `🌟━━━━━━━━━━━━━━━━━━━━━━🌟\n`;
     text += `             👑 *CRYPTO EMPIRE* 👑\n`;
@@ -479,6 +562,7 @@ async function getProfileText(userId) {
     text += `│ 💰 Криптодоход/час: ${hourlyIncome.toLocaleString()} ₽\n`;
     text += `│ 📀 Амулетов: ${amulets.length}/10\n`;
     text += `├─────────────────────────┤\n`;
+    text += `│ 🏪 Тёмных монет: ${darkCoinsAmount}\n`;
     text += `│ ${car ? `${car.emoji} Машина: ${car.name}` : '🚗 Машины нет'}\n`;
     text += `│ 🏁 Побед в гонках: ${user.races_won || 0}\n`;
     text += `├─────────────────────────┤\n`;
@@ -677,6 +761,13 @@ async function enterDungeon(userId, dungeonId) {
             }
         }
         
+        // Шанс получить тёмные монеты
+        if (Math.random() < 0.3) {
+            const darkCoinsReward = Math.floor(Math.random() * 500) + 100;
+            await addDarkCoins(userId, darkCoinsReward);
+            lootText += `\n🪙 +${darkCoinsReward} тёмных монет`;
+        }
+        
         let text = `🏆 *ПОБЕДА В ПОДЗЕМЕЛЬЕ!* 🏆\n\n`;
         text += `🏚️ ${dungeon.name}\n`;
         text += `👹 Босс: ${boss}\n`;
@@ -767,6 +858,8 @@ async function drawLottery() {
         
         if (prize > 0) {
             await updateBalance(userId, prize);
+            // Добавляем тёмные монеты победителям
+            await addDarkCoins(userId, Math.floor(prize / 1000));
             winners.push({ userId, matches, prize });
         }
     }
@@ -817,9 +910,9 @@ async function proposeMarriage(userId, targetId) {
     
     await updateBalance(userId, -500000);
     
-    marriageProposals.set(targetId, { from: userId, timestamp: Date.now() });
+    marriageProposals.set(target.user_id, { from: userId, timestamp: Date.now() });
     
-    await bot.telegram.sendMessage(targetId, 
+    await bot.telegram.sendMessage(target.user_id, 
         `💍 *ПРЕДЛОЖЕНИЕ!*\n\nИгрок #${user.id} делает вам предложение!\n\nПринять: /marry yes\nОтказать: /marry no`, 
         { parse_mode: 'Markdown' });
     
@@ -859,9 +952,9 @@ function mainKeyboard() {
         [Markup.button.callback('🦀 Клешни', 'claws'), Markup.button.callback('💻 Ферма', 'crypto')],
         [Markup.button.callback('🚗 Магазин', 'car_shop'), Markup.button.callback('📈 Биржа', 'exchange')],
         [Markup.button.callback('🏚️ Подземелье', 'dungeon'), Markup.button.callback('🎰 Лотерея', 'lottery')],
-        [Markup.button.callback('💍 Свадьба', 'marriage'), Markup.button.callback('👥 Рефералы', 'referrals')],
-        [Markup.button.callback('🎁 Бонус', 'daily'), Markup.button.callback('📊 Топы', 'top_menu')],
-        [Markup.button.callback('ℹ️ Помощь', 'help')]
+        [Markup.button.callback('🏪 Чёрный рынок', 'blackmarket'), Markup.button.callback('💍 Свадьба', 'marriage')],
+        [Markup.button.callback('👥 Рефералы', 'referrals'), Markup.button.callback('🎁 Бонус', 'daily')],
+        [Markup.button.callback('📊 Топы', 'top_menu'), Markup.button.callback('ℹ️ Помощь', 'help')]
     ]);
 }
 
@@ -901,9 +994,18 @@ bot.on('text', async (ctx) => {
         const streak = (user.streak || 0) + 1;
         const bonus = 1000 + (streak * 500);
         await updateBalance(userId, bonus);
+        
+        // Шанс получить тёмные монеты
+        if (Math.random() < 0.1) {
+            const darkReward = Math.floor(Math.random() * 100) + 50;
+            await addDarkCoins(userId, darkReward);
+            await ctx.reply(`🎁 *БОНУС!*\n🔥 Серия: ${streak}\n💰 +${bonus.toLocaleString()} ₽\n🪙 +${darkReward} тёмных монет!`, { parse_mode: 'Markdown', ...mainKeyboard() });
+        } else {
+            await ctx.reply(`🎁 *БОНУС!*\n🔥 Серия: ${streak}\n💰 +${bonus.toLocaleString()} ₽`, { parse_mode: 'Markdown', ...mainKeyboard() });
+        }
+        
         await setUserField(userId, 'last_daily', now.toISOString());
         await setUserField(userId, 'streak', streak);
-        await ctx.reply(`🎁 *БОНУС!*\n🔥 Серия: ${streak}\n💰 +${bonus.toLocaleString()}`, { parse_mode: 'Markdown', ...mainKeyboard() });
         return;
     }
     
@@ -991,25 +1093,28 @@ bot.on('text', async (ctx) => {
         helpText += `• ферма — криптоферма\n`;
         helpText += `• собрать — собрать крипту\n\n`;
         helpText += `💍 *СВАДЬБА:*\n`;
-        helpText += `• предложить #ID — сделать предложение\n`;
-        helpText += `• marry yes/no — ответ на предложение\n\n`;
+        helpText += `• /propose 15 — сделать предложение\n`;
+        helpText += `• /marry yes/no — ответ\n\n`;
+        helpText += `🏪 *ЧЁРНЫЙ РЫНОК:*\n`;
+        helpText += `• /blackmarket — посмотреть товары\n`;
+        helpText += `• /blackmarket 1 — купить товар\n\n`;
         helpText += `📈 *КРИПТО-БИРЖА:*\n`;
-        helpText += `• market — курсы валют\n`;
-        helpText += `• buycrypto BTC 5 — купить BTC\n`;
-        helpText += `• portfolio — мой портфель\n\n`;
+        helpText += `• /market — курсы валют\n`;
+        helpText += `• /buycrypto BTC 5 — купить BTC\n`;
+        helpText += `• /portfolio — портфель\n\n`;
         helpText += `🏚️ *ПОДЗЕМЕЛЬЯ:*\n`;
-        helpText += `• dungeon 1 — войти в подземелье\n`;
-        helpText += `• energy — восстановить энергию\n\n`;
+        helpText += `• /dungeon 1 — войти\n`;
+        helpText += `• /energy — восстановить энергию\n\n`;
         helpText += `🎰 *ЛОТЕРЕЯ:*\n`;
-        helpText += `• lottery 1 2 3 4 5 6 — купить билет\n\n`;
+        helpText += `• /lottery 1 2 3 4 5 6 — купить билет\n`;
         if (isAdmin) {
             helpText += `\n🛡️ *АДМИН:*\n`;
-            helpText += `• aget ID — полная инфо\n`;
-            helpText += `• give @ник сумма\n`;
-            helpText += `• ban @ник\n`;
-            helpText += `• unban @ник\n`;
-            helpText += `• announce текст\n`;
-            helpText += `• setadmin @ник роль\n`;
+            helpText += `• /aget ID — полная инфо\n`;
+            helpText += `• /give @ник сумма\n`;
+            helpText += `• /ban @ник\n`;
+            helpText += `• /unban @ник\n`;
+            helpText += `• /announce текст\n`;
+            helpText += `• /setadmin @ник роль\n`;
         }
         await ctx.reply(helpText, { parse_mode: 'Markdown', ...mainKeyboard() });
         return;
@@ -1152,6 +1257,26 @@ bot.command(['marry', 'свадьба'], async (ctx) => {
         await ctx.reply('❌ Вы отказали в предложении.', { parse_mode: 'Markdown', ...mainKeyboard() });
     } else {
         await ctx.reply('❌ Использование: /marry yes или /marry no', { parse_mode: 'Markdown' });
+    }
+});
+
+// ========== КОМАНДЫ ЧЁРНОГО РЫНКА ==========
+bot.command(['blackmarket', 'черныйрынок'], async (ctx) => {
+    const args = ctx.message.text.split(' ');
+    
+    if (args.length < 2) {
+        const text = await getBlackMarketText(ctx.from.id);
+        await ctx.reply(text, { parse_mode: 'Markdown', ...mainKeyboard() });
+        return;
+    }
+    
+    const itemId = parseInt(args[1]);
+    const result = await buyBlackMarketItem(ctx.from.id, itemId);
+    
+    if (result.error) {
+        await ctx.reply(result.error, { parse_mode: 'Markdown' });
+    } else {
+        await ctx.reply(result.text, { parse_mode: 'Markdown', ...mainKeyboard() });
     }
 });
 
@@ -1315,6 +1440,7 @@ bot.command(['aget', 'агет'], async (ctx) => {
     const role = await getAdminRole(user.user_id);
     let portfolio = [];
     try { portfolio = JSON.parse(user.crypto_portfolio || '[]'); } catch(e) { portfolio = []; }
+    const darkCoinsAmount = await getDarkCoins(user.user_id);
     
     let text = `🔒━━━━━━━━━━━━━━━━━━━━━━🔒\n`;
     text += `       *АДМИН-ИНФОРМАЦИЯ*       \n`;
@@ -1327,6 +1453,7 @@ bot.command(['aget', 'агет'], async (ctx) => {
     text += `│ 📊 Рейтинг: ${user.rating || 1000}\n`;
     text += `├─────────────────────────┤\n`;
     text += `│ 💻 Видеокарт: ${user.gpu_count?.toLocaleString() || 2500}\n`;
+    text += `│ 🏪 Тёмных монет: ${darkCoinsAmount}\n`;
     text += `│ 📊 Крипто-позиций: ${portfolio.length}\n`;
     text += `│ 💍 В браке: ${user.married_to ? '✅' : '❌'}\n`;
     text += `│ 🚫 Бан: ${user.banned ? '✅' : '❌'}\n`;
@@ -1347,26 +1474,34 @@ bot.command(['aget', 'агет'], async (ctx) => {
 // ========== КНОПКИ ==========
 bot.action('profile', async (ctx) => {
     const text = await getProfileText(ctx.from.id);
-    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
-    await ctx.answerCbQuery();
+    try {
+        await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
+    } catch(e) {}
+    try { await ctx.answerCbQuery(); } catch(e) {}
 });
 
 bot.action('business', async (ctx) => {
     const user = await getUser(ctx.from.id);
     const business = BUSINESSES[user.business_level];
     const income = business.income * (1 + (user.manager ? 0.2 : 0) + (user.advertising ? 0.15 : 0) + (user.marketing ? 0.25 : 0));
-    await ctx.editMessageText(`${business.emoji} *${business.name}* (ур.${user.business_level}/10)\n💵 Доход: ${Math.floor(income).toLocaleString()} ₽\n⬆️ Апгрейд: ${business.upgradeCost?.toLocaleString() || 'MAX'}`, { parse_mode: 'Markdown', ...mainKeyboard() });
-    await ctx.answerCbQuery();
+    try {
+        await ctx.editMessageText(`${business.emoji} *${business.name}* (ур.${user.business_level}/10)\n💵 Доход: ${Math.floor(income).toLocaleString()} ₽\n⬆️ Апгрейд: ${business.upgradeCost?.toLocaleString() || 'MAX'}`, { parse_mode: 'Markdown', ...mainKeyboard() });
+    } catch(e) {}
+    try { await ctx.answerCbQuery(); } catch(e) {}
 });
 
 bot.action('battle', async (ctx) => {
-    await ctx.editMessageText(`⚔️ *БИТВА БИЗНЕСОВ*\n\n/битва @username\n\n💪 Атака зависит от уровня бизнеса и клешней!\n🛡️ Защита зависит от улучшений!`, { parse_mode: 'Markdown', ...mainKeyboard() });
-    await ctx.answerCbQuery();
+    try {
+        await ctx.editMessageText(`⚔️ *БИТВА БИЗНЕСОВ*\n\n/битва @username\n\n💪 Атака зависит от уровня бизнеса и клешней!\n🛡️ Защита зависит от улучшений!`, { parse_mode: 'Markdown', ...mainKeyboard() });
+    } catch(e) {}
+    try { await ctx.answerCbQuery(); } catch(e) {}
 });
 
 bot.action('race', async (ctx) => {
-    await ctx.editMessageText(`🏁 *ГОНКИ*\n\n🚗 Купить машину: /buycar 1-5\n⚙️ Улучшить двигатель: /upgradeengine\n\nСкорость машины влияет на шанс победы!`, { parse_mode: 'Markdown', ...mainKeyboard() });
-    await ctx.answerCbQuery();
+    try {
+        await ctx.editMessageText(`🏁 *ГОНКИ*\n\n🚗 Купить машину: /buycar 1-5\n⚙️ Улучшить двигатель: /upgradeengine\n\nСкорость машины влияет на шанс победы!`, { parse_mode: 'Markdown', ...mainKeyboard() });
+    } catch(e) {}
+    try { await ctx.answerCbQuery(); } catch(e) {}
 });
 
 bot.action('claws', async (ctx) => {
@@ -1374,8 +1509,10 @@ bot.action('claws', async (ctx) => {
     let text = `🦀 *ТВОИ КЛЕШНИ*\n\n`;
     if (claws.length === 0) text += `Нет клешней. /магазин`;
     else for (const claw of claws) text += `${CLAWS[claw.claw_id].name} x${claw.quantity}\n`;
-    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
-    await ctx.answerCbQuery();
+    try {
+        await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
+    } catch(e) {}
+    try { await ctx.answerCbQuery(); } catch(e) {}
 });
 
 bot.action('crypto', async (ctx) => {
@@ -1387,8 +1524,10 @@ bot.action('crypto', async (ctx) => {
     let text = `💻 *КРИПТОФЕРМА*\n\n📝 Видеокарты: ${gpuCount.toLocaleString()} шт.\n💹 Доход: ${hourlyIncome.toLocaleString()} ₽/час\n📀 Амулеты: ${amulets.length}/10\n`;
     if (user.married_to) text += `💍 Свадебный бонус: +25%!\n`;
     text += `\n✨ /собрать — собрать доход\n✨ /купить ферма X — купить видеокарты`;
-    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
-    await ctx.answerCbQuery();
+    try {
+        await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
+    } catch(e) {}
+    try { await ctx.answerCbQuery(); } catch(e) {}
 });
 
 bot.action('car_shop', async (ctx) => {
@@ -1397,14 +1536,18 @@ bot.action('car_shop', async (ctx) => {
         text += `${car.emoji} ${car.name} — ${car.price.toLocaleString()} ₽\n`;
     }
     text += `\n📝 /buycar 1-5`;
-    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
-    await ctx.answerCbQuery();
+    try {
+        await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
+    } catch(e) {}
+    try { await ctx.answerCbQuery(); } catch(e) {}
 });
 
 bot.action('exchange', async (ctx) => {
     const text = await getMarketRates();
-    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
-    await ctx.answerCbQuery();
+    try {
+        await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
+    } catch(e) {}
+    try { await ctx.answerCbQuery(); } catch(e) {}
 });
 
 bot.action('dungeon', async (ctx) => {
@@ -1415,13 +1558,25 @@ bot.action('dungeon', async (ctx) => {
     text += `3. ❄️ Ледяная цитадель (ур.10) — награда до 1,500,000 ₽\n\n`;
     text += `📝 /dungeon 1 — войти в подземелье\n`;
     text += `⚡ /energy — восстановить энергию (раз в час)`;
-    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
-    await ctx.answerCbQuery();
+    try {
+        await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
+    } catch(e) {}
+    try { await ctx.answerCbQuery(); } catch(e) {}
 });
 
 bot.action('lottery', async (ctx) => {
-    await ctx.editMessageText(`🎰 *ЛОТЕРЕЯ*\n\n💰 Джекпот: ${globalJackpot.toLocaleString()} ₽\n\n/лотерея 1 2 3 4 5 6 — купить билет (10,000 ₽)\n⏰ Розыгрыш каждый час!`, { parse_mode: 'Markdown', ...mainKeyboard() });
-    await ctx.answerCbQuery();
+    try {
+        await ctx.editMessageText(`🎰 *ЛОТЕРЕЯ*\n\n💰 Джекпот: ${globalJackpot.toLocaleString()} ₽\n\n/лотерея 1 2 3 4 5 6 — купить билет (10,000 ₽)\n⏰ Розыгрыш каждый час!`, { parse_mode: 'Markdown', ...mainKeyboard() });
+    } catch(e) {}
+    try { await ctx.answerCbQuery(); } catch(e) {}
+});
+
+bot.action('blackmarket', async (ctx) => {
+    const text = await getBlackMarketText(ctx.from.id);
+    try {
+        await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
+    } catch(e) {}
+    try { await ctx.answerCbQuery(); } catch(e) {}
 });
 
 bot.action('marriage', async (ctx) => {
@@ -1430,13 +1585,14 @@ bot.action('marriage', async (ctx) => {
     text += `💍 В браке: ${user.married_to ? `✅ с игроком #${user.married_to}` : '❌ не женат'}\n\n`;
     text += `✨ *Бонусы брака:*\n`;
     text += `• Общая криптоферма (+25% дохода)\n`;
-    text += `• Атака и защита +20\n`;
-    text += `• Совместные подземелья (скоро)\n\n`;
+    text += `• Атака и защита +20\n\n`;
     text += `📝 *Команды:*\n`;
     text += `• /propose 15 — сделать предложение\n`;
     text += `• /marry yes — принять предложение`;
-    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
-    await ctx.answerCbQuery();
+    try {
+        await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
+    } catch(e) {}
+    try { await ctx.answerCbQuery(); } catch(e) {}
 });
 
 bot.action('referrals', async (ctx) => {
@@ -1446,13 +1602,17 @@ bot.action('referrals', async (ctx) => {
     text += `💰 Заработано: ${(user.referral_earned || 0).toLocaleString()} ₽\n\n`;
     text += `✨ Твоя ссылка:\n`;
     text += `\`https://t.me/${ctx.bot.botInfo.username}?start=${user.id}\``;
-    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
-    await ctx.answerCbQuery();
+    try {
+        await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
+    } catch(e) {}
+    try { await ctx.answerCbQuery(); } catch(e) {}
 });
 
 bot.action('daily', async (ctx) => {
-    await ctx.editMessageText(`🎁 /бонус — ежедневная награда!\n\n🔥 Чем дольше серия, тем больше бонус!`, { parse_mode: 'Markdown', ...mainKeyboard() });
-    await ctx.answerCbQuery();
+    try {
+        await ctx.editMessageText(`🎁 /бонус — ежедневная награда!\n\n🔥 Чем дольше серия, тем больше бонус!`, { parse_mode: 'Markdown', ...mainKeyboard() });
+    } catch(e) {}
+    try { await ctx.answerCbQuery(); } catch(e) {}
 });
 
 bot.action('top_menu', async (ctx) => {
@@ -1464,13 +1624,17 @@ bot.action('top_menu', async (ctx) => {
         const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '📌';
         text += `${medal} #${topUsers[i].id} — ${topUsers[i].balance.toLocaleString()} ₽\n`;
     }
-    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
-    await ctx.answerCbQuery();
+    try {
+        await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
+    } catch(e) {}
+    try { await ctx.answerCbQuery(); } catch(e) {}
 });
 
 bot.action('help', async (ctx) => {
-    await ctx.editMessageText(`📚 /помощь — все команды бота`, { parse_mode: 'Markdown', ...mainKeyboard() });
-    await ctx.answerCbQuery();
+    try {
+        await ctx.editMessageText(`📚 /помощь — все команды бота`, { parse_mode: 'Markdown', ...mainKeyboard() });
+    } catch(e) {}
+    try { await ctx.answerCbQuery(); } catch(e) {}
 });
 
 // ========== ЗАПУСК БОТА ==========
@@ -1479,6 +1643,7 @@ bot.launch().then(() => {
     console.log('📈 Крипто-биржа активна!');
     console.log('🏚️ Подземелья готовы!');
     console.log('🎰 Лотерея запущена!');
+    console.log('🏪 Чёрный рынок активен!');
     console.log('💍 Система сватовства активна!');
     console.log('💻 Криптоферма работает!');
     console.log('👑 Админ-команды готовы!');
