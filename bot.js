@@ -1,10 +1,13 @@
+require('dotenv').config();
+
 const { Telegraf, Markup } = require('telegraf');
 const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
+const schedule = require('node-schedule');
 
 const TOKEN = process.env.BOT_TOKEN;
 if (!TOKEN) {
     console.error('❌ BOT_TOKEN не найден!');
+    console.log('📝 Создай файл .env с содержимым: BOT_TOKEN=твой_токен');
     process.exit(1);
 }
 
@@ -68,7 +71,7 @@ const VIP_STATUSES = {
     diamond: { name: '✨ Алмаз', price: 5000000, bonusIncome: 50, bonusDefense: 75, emoji: '✨' }
 };
 
-// ========== НОВАЯ СИСТЕМА 1: КЛЕШНИ (NFT) ==========
+// ========== КЛЕШНИ (NFT) ==========
 const CLAWS = {
     1: { name: '🦀 Клешня новичка', rarity: 'common', price: 1000, attackBonus: 5, defenseBonus: 5, emoji: '🦀' },
     2: { name: '🦞 Стальная клешня', rarity: 'rare', price: 5000, attackBonus: 15, defenseBonus: 10, emoji: '🦞' },
@@ -87,7 +90,7 @@ const RARITY_COLORS = {
     divine: '🌈'
 };
 
-// ========== НОВАЯ СИСТЕМА 2: КОЛЛЕКЦИИ ==========
+// ========== КОЛЛЕКЦИИ ==========
 const COLLECTIONS = {
     pirate: {
         name: '🏴‍☠️ ПИРАТСКАЯ КОЛЛЕКЦИЯ',
@@ -106,6 +109,85 @@ const COLLECTIONS = {
         items: ['🛸 Летающая тарелка', '⭐ Звезда', '🌙 Лунный камень', '☄️ Метеорит'],
         reward: 100000,
         bonus: 'Космическая атака +25% к атаке'
+    }
+};
+
+// ========== НОВАЯ СИСТЕМА 3: ПОДЗЕМЕЛЬЯ (DUNGEONS) ==========
+const DUNGEONS = {
+    1: {
+        name: '🏚️ Заброшенная шахта',
+        level: 1,
+        minLevel: 1,
+        enemies: ['Крыса', 'Гоблин', 'Скелет'],
+        rewards: [500, 1000, 1500],
+        expReward: 10,
+        cooldown: 30
+    },
+    2: {
+        name: '🌲 Тёмный лес',
+        level: 2,
+        minLevel: 3,
+        enemies: ['Волк', 'Тролль', 'Лесной дух'],
+        rewards: [2000, 4000, 6000],
+        expReward: 25,
+        cooldown: 45
+    },
+    3: {
+        name: '🏰 Замок вампира',
+        level: 3,
+        minLevel: 5,
+        enemies: ['Вампир', 'Призрак', 'Оборотень'],
+        rewards: [8000, 15000, 25000],
+        expReward: 50,
+        cooldown: 60
+    },
+    4: {
+        name: '🐉 Логово дракона',
+        level: 4,
+        minLevel: 8,
+        enemies: ['Малый дракон', 'Огненный дракон', 'Древний дракон'],
+        rewards: [30000, 60000, 100000],
+        expReward: 100,
+        cooldown: 120
+    }
+};
+
+// ========== НОВАЯ СИСТЕМА 4: КОСМИЧЕСКИЕ БИТВЫ ==========
+const SPACE_ZONES = {
+    1: {
+        name: '🌍 Околоземная орбита',
+        level: 1,
+        enemies: ['Космический мусор', 'Спутник-шпион'],
+        rewards: [1000, 2000],
+        expReward: 5
+    },
+    2: {
+        name: '🌕 Лунная база',
+        level: 2,
+        enemies: ['Лунный робот', 'Инопланетный разведчик'],
+        rewards: [5000, 10000],
+        expReward: 15
+    },
+    3: {
+        name: '🪐 Пояс астероидов',
+        level: 3,
+        enemies: ['Космический пират', 'Астероид-убийца'],
+        rewards: [20000, 40000],
+        expReward: 35
+    },
+    4: {
+        name: '👽 Зона 51',
+        level: 4,
+        enemies: ['Серый пришелец', 'Инопланетный корабль'],
+        rewards: [75000, 150000],
+        expReward: 75
+    },
+    5: {
+        name: '🌌 Центр галактики',
+        level: 5,
+        enemies: ['Чёрная дыра', 'Звёздный разрушитель'],
+        rewards: [250000, 500000],
+        expReward: 150
     }
 };
 
@@ -136,10 +218,14 @@ db.serialize(() => {
         banned INTEGER DEFAULT 0,
         warn_count INTEGER DEFAULT 0,
         register_date TEXT,
-        equipped_claw INTEGER DEFAULT 0
+        equipped_claw INTEGER DEFAULT 0,
+        exp INTEGER DEFAULT 0,
+        level INTEGER DEFAULT 1,
+        last_dungeon TEXT,
+        last_space TEXT
     )`);
     
-    // Клешни (инвентарь)
+    // Клешни
     db.run(`CREATE TABLE IF NOT EXISTS user_claws (
         user_id INTEGER,
         claw_id INTEGER,
@@ -170,8 +256,6 @@ db.serialize(() => {
 });
 
 // ========== ФУНКЦИИ ==========
-function getDb() { return db; }
-
 async function getUser(userId) {
     return new Promise((resolve, reject) => {
         db.get('SELECT * FROM users WHERE user_id = ?', [userId], (err, row) => {
@@ -223,6 +307,29 @@ async function updateBalance(userId, amount) {
             [amount, Math.max(amount, 0), userId], (err) => {
             if (err) reject(err);
             else resolve();
+        });
+    });
+}
+
+async function addExp(userId, exp) {
+    const user = await getUser(userId);
+    if (!user) return;
+    
+    let newExp = user.exp + exp;
+    let newLevel = user.level;
+    let expNeeded = newLevel * 100;
+    
+    while (newExp >= expNeeded) {
+        newExp -= expNeeded;
+        newLevel++;
+        expNeeded = newLevel * 100;
+        await updateBalance(userId, newLevel * 1000);
+    }
+    
+    return new Promise((resolve, reject) => {
+        db.run('UPDATE users SET exp = ?, level = ? WHERE user_id = ?', [newExp, newLevel, userId], (err) => {
+            if (err) reject(err);
+            else resolve({ newExp, newLevel, leveledUp: newLevel > user.level });
         });
     });
 }
@@ -301,7 +408,6 @@ function calculateDefense(user) {
         defense += VIP_STATUSES[user.vip_level].bonusDefense;
     }
     
-    // Бонус от экипированной клешни
     if (user.equipped_claw && CLAWS[user.equipped_claw]) {
         defense += CLAWS[user.equipped_claw].defenseBonus;
     }
@@ -313,12 +419,15 @@ function calculateAttack(user) {
     let attack = 10 + (user.business_level * 3);
     if (user.hacker) attack += 30;
     
-    // Бонус от экипированной клешни
     if (user.equipped_claw && CLAWS[user.equipped_claw]) {
         attack += CLAWS[user.equipped_claw].attackBonus;
     }
     
     return attack;
+}
+
+function calculatePlayerLevel(user) {
+    return user.level;
 }
 
 // ========== КЛАВИАТУРА ==========
@@ -329,6 +438,7 @@ function mainKeyboard() {
         [Markup.button.callback('⚔️ Атака', 'attack'), Markup.button.callback('🛡️ Защита', 'protect')],
         [Markup.button.callback('🎁 Бонус', 'daily'), Markup.button.callback('👑 VIP', 'vip')],
         [Markup.button.callback('🦀 Клешни', 'claws'), Markup.button.callback('📦 Коллекции', 'collections')],
+        [Markup.button.callback('🏰 Подземелье', 'dungeons'), Markup.button.callback('🚀 Космос', 'space')],
         [Markup.button.callback('📊 Топ', 'top'), Markup.button.callback('ℹ️ Помощь', 'help')]
     ]);
 }
@@ -341,16 +451,19 @@ bot.start(async (ctx) => {
     
     const text = `🦀 *CRYPTO EMPIRE: БИТВА КЛЕШНЕЙ* 🦀\n\n` +
                  `✨ *Твой ID:* #${gameId}\n` +
+                 `🎚️ *Уровень:* ${user.level}\n` +
                  `💰 *Баланс:* ${user.balance.toLocaleString()} монет\n\n` +
                  `📌 *Любую команду можно вводить без /*\n` +
                  `🔥 *Доступные команды:*\n` +
-                 `• баланс, б, деньги - баланс\n` +
+                 `• баланс, б - баланс\n` +
                  `• бизнес, биз - бизнес\n` +
-                 `• собрать - доход каждые 15 мин\n` +
+                 `• собрать - доход\n` +
                  `• атака @ник - атаковать\n` +
                  `• защита 24 - купить защиту\n` +
                  `• клешни - твои клешни\n` +
                  `• коллекции - коллекции\n` +
+                 `• подземелье - пройти подземелье\n` +
+                 `• космос - космические битвы\n` +
                  `• топ - топ игроков\n` +
                  `• гет @ник - информация\n` +
                  `• админ - админ панель\n\n` +
@@ -359,7 +472,105 @@ bot.start(async (ctx) => {
     await ctx.reply(text, { parse_mode: 'Markdown', ...mainKeyboard() });
 });
 
-// Функция для обработки любой команды без /
+// ========== ПОДЗЕМЕЛЬЯ ==========
+async function dungeonFight(userId, dungeonId) {
+    const user = await getUser(userId);
+    const dungeon = DUNGEONS[dungeonId];
+    
+    if (!dungeon) return null;
+    if (user.level < dungeon.minLevel) {
+        return { error: `❌ Требуется ${dungeon.minLevel} уровень! У тебя ${user.level}` };
+    }
+    
+    const lastDungeon = user.last_dungeon ? new Date(user.last_dungeon) : new Date(0);
+    const cooldownRemaining = (lastDungeon.getTime() + dungeon.cooldown * 60000) - Date.now();
+    if (cooldownRemaining > 0) {
+        const minutes = Math.ceil(cooldownRemaining / 60000);
+        return { error: `⏳ Подожди ${minutes} минут перед следующим заходом!` };
+    }
+    
+    const enemyIndex = Math.floor(Math.random() * dungeon.enemies.length);
+    const enemy = dungeon.enemies[enemyIndex];
+    const reward = dungeon.rewards[Math.floor(Math.random() * dungeon.rewards.length)];
+    const expReward = dungeon.expReward;
+    
+    const win = Math.random() > 0.3;
+    
+    if (win) {
+        await updateBalance(userId, reward);
+        const expResult = await addExp(userId, expReward);
+        
+        db.run('UPDATE users SET last_dungeon = ? WHERE user_id = ?', [new Date().toISOString(), userId]);
+        
+        let text = `🏆 *ПОБЕДА!* 🏆\n\n`;
+        text += `⚔️ Ты победил ${enemy}!\n`;
+        text += `💰 Награда: +${reward.toLocaleString()} монет\n`;
+        text += `✨ Опыт: +${expReward}\n`;
+        
+        if (expResult.leveledUp) {
+            text += `\n🎉 *УРОВЕНЬ ПОВЫШЕН!* Теперь ${expResult.newLevel} уровень! 🎉\n`;
+            text += `💰 +${expResult.newLevel * 1000} монет за повышение!`;
+        }
+        
+        return { success: true, text };
+    } else {
+        const penalty = Math.floor(reward * 0.3);
+        await updateBalance(userId, -penalty);
+        db.run('UPDATE users SET last_dungeon = ? WHERE user_id = ?', [new Date().toISOString(), userId]);
+        
+        return { success: false, text: `💀 *ПОРАЖЕНИЕ!* 💀\n\nТы проиграл ${enemy}!\n💔 Потеряно: ${penalty.toLocaleString()} монет` };
+    }
+}
+
+// ========== КОСМИЧЕСКИЕ БИТВЫ ==========
+async function spaceBattle(userId, zoneId) {
+    const user = await getUser(userId);
+    const zone = SPACE_ZONES[zoneId];
+    
+    if (!zone) return null;
+    if (user.level < zone.level) {
+        return { error: `❌ Требуется ${zone.level} уровень для этой зоны!` };
+    }
+    
+    const lastSpace = user.last_space ? new Date(user.last_space) : new Date(0);
+    if ((Date.now() - lastSpace.getTime()) < 600000) {
+        const minutes = Math.ceil((600000 - (Date.now() - lastSpace.getTime())) / 60000);
+        return { error: `⏳ Отдыхай ${minutes} минут перед следующим боем!` };
+    }
+    
+    const enemyIndex = Math.floor(Math.random() * zone.enemies.length);
+    const enemy = zone.enemies[enemyIndex];
+    const reward = zone.rewards[Math.floor(Math.random() * zone.rewards.length)];
+    
+    const attack = calculateAttack(user);
+    const win = attack + Math.random() * 50 > 50 + Math.random() * 50;
+    
+    if (win) {
+        await updateBalance(userId, reward);
+        const expResult = await addExp(userId, zone.expReward);
+        
+        db.run('UPDATE users SET last_space = ? WHERE user_id = ?', [new Date().toISOString(), userId]);
+        
+        let text = `🚀 *КОСМИЧЕСКАЯ ПОБЕДА!* 🚀\n\n`;
+        text += `🛸 Ты уничтожил ${enemy}!\n`;
+        text += `💰 Награда: +${reward.toLocaleString()} монет\n`;
+        text += `✨ Опыт: +${zone.expReward}\n`;
+        
+        if (expResult.leveledUp) {
+            text += `\n🎉 *УРОВЕНЬ ПОВЫШЕН!* Теперь ${expResult.newLevel} уровень! 🎉`;
+        }
+        
+        return { success: true, text };
+    } else {
+        const penalty = Math.floor(reward * 0.2);
+        await updateBalance(userId, -penalty);
+        db.run('UPDATE users SET last_space = ? WHERE user_id = ?', [new Date().toISOString(), userId]);
+        
+        return { success: false, text: `💥 *КОСМИЧЕСКОЕ ПОРАЖЕНИЕ!* 💥\n\n👽 Ты проиграл ${enemy}!\n💔 Потеряно: ${penalty.toLocaleString()} монет` };
+    }
+}
+
+// ========== ФУНКЦИЯ ДЛЯ ОБРАБОТКИ ЛЮБЫХ КОМАНД ==========
 async function handleAnyCommand(ctx, commandName, args) {
     const userId = ctx.from.id;
     
@@ -368,7 +579,7 @@ async function handleAnyCommand(ctx, commandName, args) {
             const user = await getUser(userId);
             if (!user) { await ctx.reply('❌ Напиши /start'); return; }
             const gameId = await getGameId(userId);
-            await ctx.reply(`💰 *БАЛАНС*\n\n🆔 #${gameId}\n💵 ${user.balance.toLocaleString()} монет\n⚔️ Атак: ${user.attacks_won}\n🛡️ Защит: ${user.defenses_won}`, { parse_mode: 'Markdown', ...mainKeyboard() });
+            await ctx.reply(`💰 *БАЛАНС*\n\n🆔 #${gameId}\n🎚️ Уровень: ${user.level}\n💵 ${user.balance.toLocaleString()} монет\n⚔️ Атак: ${user.attacks_won}\n🛡️ Защит: ${user.defenses_won}`, { parse_mode: 'Markdown', ...mainKeyboard() });
             break;
             
         case 'бизнес': case 'биз': case 'business':
@@ -404,7 +615,7 @@ async function handleAnyCommand(ctx, commandName, args) {
             const claws = await getUserClaws(userId);
             let clawsText = `🦀 *ТВОИ КЛЕШНИ*\n\n`;
             if (claws.length === 0) {
-                clawsText += `У тебя пока нет клешней!\nКупи в магазине: /магазин\n`;
+                clawsText += `У тебя пока нет клешней!\nКупи в магазине: магазин\n`;
             } else {
                 for (const claw of claws) {
                     const clawData = CLAWS[claw.claw_id];
@@ -434,13 +645,109 @@ async function handleAnyCommand(ctx, commandName, args) {
             await ctx.reply(collectionsText, { parse_mode: 'Markdown', ...mainKeyboard() });
             break;
             
+        case 'подземелье': case 'dungeon': case 'данжен':
+            const userDungeon = await getUser(userId);
+            if (!userDungeon) { await ctx.reply('❌ Напиши /start'); return; }
+            
+            let dungeonText = `🏰 *ПОДЗЕМЕЛЬЯ*\n\n`;
+            for (const [id, dng] of Object.entries(DUNGEONS)) {
+                const unlocked = userDungeon.level >= dng.minLevel;
+                dungeonText += `${unlocked ? '✅' : '🔒'} *${dng.name}*\n`;
+                dungeonText += `   🎚️ Требуемый уровень: ${dng.minLevel}\n`;
+                dungeonText += `   💰 Награда: до ${Math.max(...dng.rewards).toLocaleString()} монет\n`;
+                if (unlocked) {
+                    dungeonText += `   🎮 *Пройти: подземелье ${id}*\n`;
+                }
+                dungeonText += `\n`;
+            }
+            const dungeonKeyboard = Markup.inlineKeyboard([
+                [Markup.button.callback('🏚️ Шахта (ур.1)', 'dungeon_1')],
+                [Markup.button.callback('🌲 Тёмный лес (ур.3)', 'dungeon_2')],
+                [Markup.button.callback('🏰 Замок (ур.5)', 'dungeon_3')],
+                [Markup.button.callback('🐉 Логово (ур.8)', 'dungeon_4')],
+                [Markup.button.callback('🔙 Назад', 'back')]
+            ]);
+            await ctx.reply(dungeonText, { parse_mode: 'Markdown', ...dungeonKeyboard });
+            break;
+            
+        case 'подземелье1': case 'dungeon_1':
+            const result1 = await dungeonFight(userId, 1);
+            await ctx.reply(result1.text, { parse_mode: 'Markdown', ...mainKeyboard() });
+            break;
+            
+        case 'подземелье2': case 'dungeon_2':
+            const result2 = await dungeonFight(userId, 2);
+            await ctx.reply(result2.text, { parse_mode: 'Markdown', ...mainKeyboard() });
+            break;
+            
+        case 'подземелье3': case 'dungeon_3':
+            const result3 = await dungeonFight(userId, 3);
+            await ctx.reply(result3.text, { parse_mode: 'Markdown', ...mainKeyboard() });
+            break;
+            
+        case 'подземелье4': case 'dungeon_4':
+            const result4 = await dungeonFight(userId, 4);
+            await ctx.reply(result4.text, { parse_mode: 'Markdown', ...mainKeyboard() });
+            break;
+            
+        case 'космос': case 'space':
+            const userSpace = await getUser(userId);
+            if (!userSpace) { await ctx.reply('❌ Напиши /start'); return; }
+            
+            let spaceText = `🚀 *КОСМИЧЕСКИЕ БИТВЫ*\n\n`;
+            for (const [id, zone] of Object.entries(SPACE_ZONES)) {
+                const unlocked = userSpace.level >= zone.level;
+                spaceText += `${unlocked ? '✅' : '🔒'} *${zone.name}*\n`;
+                spaceText += `   🎚️ Требуемый уровень: ${zone.level}\n`;
+                spaceText += `   💰 Награда: до ${Math.max(...zone.rewards).toLocaleString()} монет\n`;
+                if (unlocked) {
+                    spaceText += `   🎮 *Битва: космос ${id}*\n`;
+                }
+                spaceText += `\n`;
+            }
+            const spaceKeyboard = Markup.inlineKeyboard([
+                [Markup.button.callback('🌍 Орбита (ур.1)', 'space_1')],
+                [Markup.button.callback('🌕 Луна (ур.2)', 'space_2')],
+                [Markup.button.callback('🪐 Астероиды (ур.3)', 'space_3')],
+                [Markup.button.callback('👽 Зона 51 (ур.4)', 'space_4')],
+                [Markup.button.callback('🌌 Центр (ур.5)', 'space_5')],
+                [Markup.button.callback('🔙 Назад', 'back')]
+            ]);
+            await ctx.reply(spaceText, { parse_mode: 'Markdown', ...spaceKeyboard });
+            break;
+            
+        case 'космос1': case 'space_1':
+            const battle1 = await spaceBattle(userId, 1);
+            await ctx.reply(battle1.text, { parse_mode: 'Markdown', ...mainKeyboard() });
+            break;
+            
+        case 'космос2': case 'space_2':
+            const battle2 = await spaceBattle(userId, 2);
+            await ctx.reply(battle2.text, { parse_mode: 'Markdown', ...mainKeyboard() });
+            break;
+            
+        case 'космос3': case 'space_3':
+            const battle3 = await spaceBattle(userId, 3);
+            await ctx.reply(battle3.text, { parse_mode: 'Markdown', ...mainKeyboard() });
+            break;
+            
+        case 'космос4': case 'space_4':
+            const battle4 = await spaceBattle(userId, 4);
+            await ctx.reply(battle4.text, { parse_mode: 'Markdown', ...mainKeyboard() });
+            break;
+            
+        case 'космос5': case 'space_5':
+            const battle5 = await spaceBattle(userId, 5);
+            await ctx.reply(battle5.text, { parse_mode: 'Markdown', ...mainKeyboard() });
+            break;
+            
         case 'топ': case 'top':
-            db.all('SELECT id, balance FROM users ORDER BY balance DESC LIMIT 10', (err, rows) => {
+            db.all('SELECT id, balance, level FROM users ORDER BY balance DESC LIMIT 10', (err, rows) => {
                 if (err) return;
                 let text = '🏆 *ТОП 10 БОГАЧЕЙ* 🏆\n\n';
                 rows.forEach((row, i) => {
                     const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '📌';
-                    text += `${medal} #${row.id} — ${row.balance.toLocaleString()} монет\n`;
+                    text += `${medal} #${row.id} | Ур.${row.level} | ${row.balance.toLocaleString()} монет\n`;
                 });
                 ctx.reply(text, { parse_mode: 'Markdown' });
             });
@@ -449,22 +756,21 @@ async function handleAnyCommand(ctx, commandName, args) {
         case 'гет': case 'get': case 'info':
             if (args.length > 0) {
                 const target = args[0];
-                let userInfo;
                 if (target.startsWith('@')) {
                     try {
                         const chat = await ctx.telegram.getChat(target);
-                        userInfo = await getUser(chat.id);
+                        const userInfo = await getUser(chat.id);
                         if (userInfo) {
                             const gid = await getGameId(chat.id);
-                            await ctx.reply(`📊 *ИНФО*\n🆔 #${gid}\n💰 Баланс: ${userInfo.balance.toLocaleString()}\n🏪 Уровень: ${userInfo.business_level}/10`, { parse_mode: 'Markdown' });
+                            await ctx.reply(`📊 *ИНФО*\n🆔 #${gid}\n🎚️ Уровень: ${userInfo.level}\n💰 Баланс: ${userInfo.balance.toLocaleString()}\n🏪 Уровень бизнеса: ${userInfo.business_level}/10`, { parse_mode: 'Markdown' });
                         } else {
                             await ctx.reply('❌ Игрок не найден');
                         }
                     } catch(e) { await ctx.reply('❌ Пользователь не найден'); }
                 } else if (/^\d+$/.test(target)) {
-                    userInfo = await getUserById(parseInt(target));
+                    const userInfo = await getUserById(parseInt(target));
                     if (userInfo) {
-                        await ctx.reply(`📊 *ИНФО*\n🆔 #${target}\n💰 Баланс: ${userInfo.balance.toLocaleString()}\n🏪 Уровень: ${userInfo.business_level}/10`, { parse_mode: 'Markdown' });
+                        await ctx.reply(`📊 *ИНФО*\n🆔 #${target}\n🎚️ Уровень: ${userInfo.level}\n💰 Баланс: ${userInfo.balance.toLocaleString()}\n🏪 Уровень бизнеса: ${userInfo.business_level}/10`, { parse_mode: 'Markdown' });
                     } else {
                         await ctx.reply('❌ Игрок не найден');
                     }
@@ -526,22 +832,6 @@ async function handleAnyCommand(ctx, commandName, args) {
             }
             break;
             
-        case 'помощь': case 'help': case 'хелп':
-            await ctx.reply(`📚 *ПОМОЩЬ*\n\n` +
-                `💰 баланс, б - баланс\n` +
-                `🏪 бизнес, биз - бизнес\n` +
-                `💼 собрать - доход\n` +
-                `⚔️ атака @ник - атака\n` +
-                `🛡️ защита 24 - защита\n` +
-                `🦀 клешни - твои клешни\n` +
-                `📦 коллекции - коллекции\n` +
-                `📊 топ - топ игроков\n` +
-                `🔍 гет @ник - информация\n` +
-                `🛡️ админ - админ панель\n` +
-                `🎁 магазин - магазин\n\n` +
-                `*Любую команду можно вводить без /*`, { parse_mode: 'Markdown' });
-            break;
-            
         case 'магазин': case 'shop':
             let shopText = `🎒 *МАГАЗИН КЛЕШНЕЙ*\n\n`;
             for (const [id, claw] of Object.entries(CLAWS)) {
@@ -556,13 +846,32 @@ async function handleAnyCommand(ctx, commandName, args) {
                 [Markup.button.callback('🛒 Купить клешню 2', 'buy_claw_2')],
                 [Markup.button.callback('🛒 Купить клешню 3', 'buy_claw_3')],
                 [Markup.button.callback('🛒 Купить клешню 4', 'buy_claw_4')],
+                [Markup.button.callback('🛒 Купить клешню 5', 'buy_claw_5')],
+                [Markup.button.callback('🛒 Купить клешню 6', 'buy_claw_6')],
                 [Markup.button.callback('🔙 Назад', 'back')]
             ]);
             await ctx.reply(shopText, { parse_mode: 'Markdown', ...shopKeyboard });
             break;
             
+        case 'помощь': case 'help': case 'хелп':
+            await ctx.reply(`📚 *ПОМОЩЬ*\n\n` +
+                `💰 баланс, б - баланс\n` +
+                `🏪 бизнес, биз - бизнес\n` +
+                `💼 собрать - доход\n` +
+                `⚔️ атака @ник - атака\n` +
+                `🛡️ защита 24 - защита\n` +
+                `🦀 клешни - твои клешни\n` +
+                `📦 коллекции - коллекции\n` +
+                `🏰 подземелье - подземелья (опыт, монеты)\n` +
+                `🚀 космос - космические битвы\n` +
+                `📊 топ - топ игроков\n` +
+                `🔍 гет @ник - информация\n` +
+                `🛡️ админ - админ панель\n` +
+                `🎁 магазин - магазин клешней\n\n` +
+                `*Любую команду можно вводить без /*`, { parse_mode: 'Markdown' });
+            break;
+            
         default:
-            // Игнорируем неизвестные команды
             break;
     }
 }
@@ -572,20 +881,25 @@ bot.action('balance', async (ctx) => {
     const userId = ctx.from.id;
     const user = await getUser(userId);
     const gameId = await getGameId(userId);
-    await ctx.editMessageText(`💰 *БАЛАНС*\n\n🆔 #${gameId}\n💵 ${user?.balance.toLocaleString() || 0} монет`, { parse_mode: 'Markdown', ...mainKeyboard() });
+    await ctx.editMessageText(`💰 *БАЛАНС*\n\n🆔 #${gameId}\n🎚️ Уровень: ${user?.level || 1}\n💵 ${user?.balance.toLocaleString() || 0} монет`, { parse_mode: 'Markdown', ...mainKeyboard() });
     await ctx.answerCbQuery();
 });
 
 bot.action('claws', async (ctx) => {
     const userId = ctx.from.id;
     const claws = await getUserClaws(userId);
+    const user = await getUser(userId);
     let text = `🦀 *ТВОИ КЛЕШНИ*\n\n`;
     if (claws.length === 0) {
-        text += `У тебя пока нет клешней!\nКупи в магазине: /магазин`;
+        text += `У тебя пока нет клешней!\nКупи в магазине: магазин`;
     } else {
         for (const claw of claws) {
             const clawData = CLAWS[claw.claw_id];
             text += `${RARITY_COLORS[clawData.rarity]} ${clawData.name} x${claw.quantity}\n`;
+        }
+        if (user?.equipped_claw) {
+            const equipped = CLAWS[user.equipped_claw];
+            text += `\n✨ *Экипировано:* ${equipped.name}`;
         }
     }
     const keyboard = Markup.inlineKeyboard([
@@ -602,9 +916,8 @@ bot.action('shop_menu', async (ctx) => {
         text += `${RARITY_COLORS[claw.rarity]} *${claw.name}*\n💰 ${claw.price.toLocaleString()} монет\n⚔️ +${claw.attackBonus} | 🛡️ +${claw.defenseBonus}\n\n`;
     }
     const keyboard = Markup.inlineKeyboard([
-        [Markup.button.callback('🛒 Купить 1', 'buy_claw_1'), Markup.button.callback('🛒 Купить 2', 'buy_claw_2')],
-        [Markup.button.callback('🛒 Купить 3', 'buy_claw_3'), Markup.button.callback('🛒 Купить 4', 'buy_claw_4')],
-        [Markup.button.callback('🛒 Купить 5', 'buy_claw_5'), Markup.button.callback('🛒 Купить 6', 'buy_claw_6')],
+        [Markup.button.callback('🛒 1', 'buy_claw_1'), Markup.button.callback('🛒 2', 'buy_claw_2'), Markup.button.callback('🛒 3', 'buy_claw_3')],
+        [Markup.button.callback('🛒 4', 'buy_claw_4'), Markup.button.callback('🛒 5', 'buy_claw_5'), Markup.button.callback('🛒 6', 'buy_claw_6')],
         [Markup.button.callback('🔙 Назад', 'claws')]
     ]);
     await ctx.editMessageText(text, { parse_mode: 'Markdown', ...keyboard });
@@ -628,6 +941,61 @@ for (let i = 1; i <= 6; i++) {
     });
 }
 
+bot.action('dungeons', async (ctx) => {
+    const userId = ctx.from.id;
+    const user = await getUser(userId);
+    let text = `🏰 *ПОДЗЕМЕЛЬЯ*\n\n`;
+    for (const [id, dng] of Object.entries(DUNGEONS)) {
+        const unlocked = user.level >= dng.minLevel;
+        text += `${unlocked ? '✅' : '🔒'} *${dng.name}*\n`;
+        text += `   🎚️ Уровень: ${dng.minLevel}\n`;
+        text += `   💰 Награда: до ${Math.max(...dng.rewards).toLocaleString()} монет\n\n`;
+    }
+    const keyboard = Markup.inlineKeyboard([
+        [Markup.button.callback('🏚️ Шахта', 'dungeon_1'), Markup.button.callback('🌲 Лес', 'dungeon_2')],
+        [Markup.button.callback('🏰 Замок', 'dungeon_3'), Markup.button.callback('🐉 Логово', 'dungeon_4')],
+        [Markup.button.callback('🔙 Назад', 'back')]
+    ]);
+    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...keyboard });
+    await ctx.answerCbQuery();
+});
+
+bot.action('space', async (ctx) => {
+    const userId = ctx.from.id;
+    const user = await getUser(userId);
+    let text = `🚀 *КОСМИЧЕСКИЕ БИТВЫ*\n\n`;
+    for (const [id, zone] of Object.entries(SPACE_ZONES)) {
+        const unlocked = user.level >= zone.level;
+        text += `${unlocked ? '✅' : '🔒'} *${zone.name}*\n`;
+        text += `   🎚️ Уровень: ${zone.level}\n`;
+        text += `   💰 Награда: до ${Math.max(...zone.rewards).toLocaleString()} монет\n\n`;
+    }
+    const keyboard = Markup.inlineKeyboard([
+        [Markup.button.callback('🌍 Орбита', 'space_1'), Markup.button.callback('🌕 Луна', 'space_2')],
+        [Markup.button.callback('🪐 Астероиды', 'space_3'), Markup.button.callback('👽 Зона 51', 'space_4')],
+        [Markup.button.callback('🌌 Центр', 'space_5')],
+        [Markup.button.callback('🔙 Назад', 'back')]
+    ]);
+    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...keyboard });
+    await ctx.answerCbQuery();
+});
+
+bot.action(['dungeon_1', 'dungeon_2', 'dungeon_3', 'dungeon_4'], async (ctx) => {
+    const userId = ctx.from.id;
+    const dungeonId = parseInt(ctx.match[0].split('_')[1]);
+    const result = await dungeonFight(userId, dungeonId);
+    await ctx.editMessageText(result.text, { parse_mode: 'Markdown', ...mainKeyboard() });
+    await ctx.answerCbQuery();
+});
+
+bot.action(['space_1', 'space_2', 'space_3', 'space_4', 'space_5'], async (ctx) => {
+    const userId = ctx.from.id;
+    const zoneId = parseInt(ctx.match[0].split('_')[1]);
+    const result = await spaceBattle(userId, zoneId);
+    await ctx.editMessageText(result.text, { parse_mode: 'Markdown', ...mainKeyboard() });
+    await ctx.answerCbQuery();
+});
+
 bot.action('back', async (ctx) => {
     await ctx.editMessageText('🏪 *ГЛАВНОЕ МЕНЮ*', { parse_mode: 'Markdown', ...mainKeyboard() });
     await ctx.answerCbQuery();
@@ -639,18 +1007,15 @@ bot.action(['business', 'collect', 'upgrades', 'attack', 'protect', 'daily', 'vi
 
 // ========== ОБРАБОТКА ЛЮБОГО ТЕКСТА БЕЗ / ==========
 bot.on('text', async (ctx) => {
-    const text = ctx.message.text.trim();
+    const text = ctx.message.text.trim().toLowerCase();
     const userId = ctx.from.id;
     
-    // Пропускаем команды с /
     if (text.startsWith('/')) return;
     
-    // Разбиваем на команду и аргументы
-    const parts = text.toLowerCase().split(/\s+/);
+    const parts = text.split(/\s+/);
     const command = parts[0];
     const args = parts.slice(1);
     
-    // Список всех доступных команд
     const commands = [
         'баланс', 'б', 'деньги', 'balance',
         'бизнес', 'биз', 'business',
@@ -659,6 +1024,12 @@ bot.on('text', async (ctx) => {
         'защита', 'protect',
         'клешни', 'claws',
         'коллекции', 'collections',
+        'подземелье', 'dungeon', 'данжен',
+        'подземелье1', 'подземелье2', 'подземелье3', 'подземелье4',
+        'dungeon_1', 'dungeon_2', 'dungeon_3', 'dungeon_4',
+        'космос', 'space',
+        'космос1', 'космос2', 'космос3', 'космос4', 'космос5',
+        'space_1', 'space_2', 'space_3', 'space_4', 'space_5',
         'топ', 'top',
         'гет', 'get', 'info',
         'админ', 'ahelp', 'ахелп', 'акмд',
@@ -679,7 +1050,9 @@ bot.on('text', async (ctx) => {
 bot.launch().then(() => {
     console.log('🦀 CRYPTO EMPIRE: БИТВА КЛЕШНЕЙ ЗАПУЩЕН!');
     console.log('📡 Любую команду можно вводить без /');
-    console.log('🎮 Добавлены системы: КЛЕШНИ и КОЛЛЕКЦИИ');
+    console.log('🎮 Добавлены системы: КЛЕШНИ, КОЛЛЕКЦИИ, ПОДЗЕМЕЛЬЯ, КОСМИЧЕСКИЕ БИТВЫ');
+    console.log('✨ Твой ID в игре будет #1 (ты владелец)');
+    console.log('💰 Стартовый бонус: 1,000,000 монет');
 });
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
