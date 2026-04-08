@@ -7,7 +7,7 @@ console.log('✅ Токен загружен, запускаю бота...');
 
 const bot = new Telegraf(TOKEN);
 
-// ========== КЭШ ДЛЯ УСКОРЕНИЯ ==========
+// ========== КЭШ ==========
 const userCache = new Map();
 const CACHE_TTL = 30000;
 
@@ -174,6 +174,9 @@ let globalJackpot = 10000000;
 let lotteryTickets = new Map();
 let lastDrawTime = Date.now();
 
+// ========== СИСТЕМА СВАТОВСТВА ==========
+let marriageProposals = new Map();
+
 // ========== БАЗА ДАННЫХ ==========
 const db = new sqlite3.Database('business.db');
 
@@ -214,7 +217,8 @@ db.serialize(() => {
         crypto_portfolio TEXT DEFAULT '[]',
         dungeon_energy INTEGER DEFAULT 100,
         last_dungeon TEXT,
-        dungeon_level INTEGER DEFAULT 1
+        dungeon_level INTEGER DEFAULT 1,
+        married_to INTEGER DEFAULT 0
     )`);
     
     db.run(`CREATE TABLE IF NOT EXISTS user_claws (
@@ -231,6 +235,7 @@ db.serialize(() => {
         appointed_at TEXT
     )`);
     
+    // Добавляем владельца
     for (const [role, data] of Object.entries(ADMIN_ROLES)) {
         for (const userId of data.users) {
             db.run(`INSERT OR IGNORE INTO admins (user_id, role, appointed_by, appointed_at) 
@@ -271,8 +276,13 @@ async function registerUser(userId, referrerId = null) {
         const now = new Date().toISOString();
         db.run(`INSERT INTO users (user_id, last_collect, last_daily, register_date, referrer_id, gpu_count, last_crypto_collect) 
                 VALUES (?, ?, ?, ?, ?, ?, ?)`, [userId, now, now, now, referrerId, BASE_GPU_COUNT, now], function(err) {
-            if (err) reject(err);
-            else {
+            if (err) {
+                if (err.code === 'SQLITE_CONSTRAINT') {
+                    getUser(userId).then(user => resolve(user.id)).catch(reject);
+                } else {
+                    reject(err);
+                }
+            } else {
                 if (this.lastID === 1) {
                     db.run('UPDATE users SET balance = 1000000 WHERE user_id = ?', [userId]);
                 }
@@ -376,7 +386,9 @@ function calculateCryptoIncome(user) {
     let amulets = [];
     try { amulets = JSON.parse(user.farm_amulets || '[]'); } catch(e) { amulets = []; }
     const amuletBonus = amulets.length * 10;
-    return Math.floor(gpuCount * (1 + amuletBonus / 100));
+    let marriageBonus = 0;
+    if (user.married_to) marriageBonus = 25;
+    return Math.floor(gpuCount * (1 + (amuletBonus + marriageBonus) / 100));
 }
 
 async function collectCrypto(userId) {
@@ -417,6 +429,7 @@ function calculateAttack(user) {
     if (user.vip_level !== 'none' && VIP_STATUSES[user.vip_level]) {
         attack += VIP_STATUSES[user.vip_level].bonusAttack;
     }
+    if (user.married_to) attack += 20;
     return attack;
 }
 
@@ -431,6 +444,7 @@ function calculateDefense(user) {
     if (user.vip_level !== 'none' && VIP_STATUSES[user.vip_level]) {
         defense += VIP_STATUSES[user.vip_level].bonusDefense;
     }
+    if (user.married_to) defense += 20;
     return defense;
 }
 
@@ -446,6 +460,7 @@ async function getProfileText(userId) {
     const hourlyIncome = calculateCryptoIncome(user);
     let amulets = [];
     try { amulets = JSON.parse(user.farm_amulets || '[]'); } catch(e) { amulets = []; }
+    const spouse = user.married_to ? await getUserById(user.married_to) : null;
     
     let text = `🌟━━━━━━━━━━━━━━━━━━━━━━🌟\n`;
     text += `             👑 *CRYPTO EMPIRE* 👑\n`;
@@ -467,6 +482,7 @@ async function getProfileText(userId) {
     text += `│ ${car ? `${car.emoji} Машина: ${car.name}` : '🚗 Машины нет'}\n`;
     text += `│ 🏁 Побед в гонках: ${user.races_won || 0}\n`;
     text += `├─────────────────────────┤\n`;
+    text += `│ ${spouse ? `💍 В браке с #${spouse.id}` : '💔 Не женат'}\n`;
     text += `│ ${user.vip_level !== 'none' ? VIP_STATUSES[user.vip_level].emoji + ' VIP: ' + VIP_STATUSES[user.vip_level].name : '✨ VIP: Нет'}\n`;
     text += `│ 🔥 Серия: ${user.streak || 0} дней\n`;
     text += `└─────────────────────────┘\n\n`;
@@ -696,7 +712,7 @@ async function restoreEnergy(userId) {
     await setUserField(userId, 'last_energy_restore', new Date().toISOString());
     
     return { success: true, text: '⚡ Энергия восстановлена до 100!' };
-                }
+}
 
 // ========== ЛОТЕРЕЯ ФУНКЦИИ ==========
 async function buyLotteryTicket(userId, numbers) {
@@ -789,6 +805,52 @@ async function drawLottery() {
 
 setInterval(drawLottery, 60000);
 
+// ========== СВАТОВСТВО ФУНКЦИИ ==========
+async function proposeMarriage(userId, targetId) {
+    const user = await getUser(userId);
+    const target = await getUser(targetId);
+    
+    if (!target) return { error: '❌ Игрок не найден!' };
+    if (user.married_to) return { error: '❌ Вы уже состоите в браке!' };
+    if (target.married_to) return { error: '❌ Игрок уже в браке!' };
+    if (user.balance < 500000) return { error: '❌ Свадьба стоит 500,000 монет!' };
+    
+    await updateBalance(userId, -500000);
+    
+    marriageProposals.set(targetId, { from: userId, timestamp: Date.now() });
+    
+    await bot.telegram.sendMessage(targetId, 
+        `💍 *ПРЕДЛОЖЕНИЕ!*\n\nИгрок #${user.id} делает вам предложение!\n\nПринять: /marry yes\nОтказать: /marry no`, 
+        { parse_mode: 'Markdown' });
+    
+    return { success: true, text: `💍 Предложение отправлено игроку #${target.id}!` };
+}
+
+async function acceptMarriage(userId) {
+    const proposal = marriageProposals.get(userId);
+    if (!proposal) return { error: '❌ Нет активных предложений!' };
+    if (Date.now() - proposal.timestamp > 300000) {
+        marriageProposals.delete(userId);
+        return { error: '❌ Предложение устарело!' };
+    }
+    
+    const user = await getUser(userId);
+    const proposer = await getUser(proposal.from);
+    
+    if (user.married_to || proposer.married_to) return { error: '❌ Кто-то уже в браке!' };
+    
+    await setUserField(userId, 'married_to', proposer.id);
+    await setUserField(proposer.user_id, 'married_to', user.id);
+    
+    const totalGpu = (user.gpu_count || 0) + (proposer.gpu_count || 0);
+    await setUserField(userId, 'gpu_count', totalGpu);
+    await setUserField(proposer.user_id, 'gpu_count', totalGpu);
+    
+    marriageProposals.delete(userId);
+    
+    return { success: true, text: `💍 *ПОЗДРАВЛЯЕМ!*\n\nИгроки #${user.id} и #${proposer.id} теперь в браке!\n💻 Общая ферма: ${totalGpu.toLocaleString()} видеокарт\n❤️ Совместный доход увеличен на 25%!\n⚔️ Атака и защита +20!` };
+}
+
 // ========== КОМАНДЫ БОТА ==========
 function mainKeyboard() {
     return Markup.inlineKeyboard([
@@ -797,8 +859,9 @@ function mainKeyboard() {
         [Markup.button.callback('🦀 Клешни', 'claws'), Markup.button.callback('💻 Ферма', 'crypto')],
         [Markup.button.callback('🚗 Магазин', 'car_shop'), Markup.button.callback('📈 Биржа', 'exchange')],
         [Markup.button.callback('🏚️ Подземелье', 'dungeon'), Markup.button.callback('🎰 Лотерея', 'lottery')],
-        [Markup.button.callback('👥 Рефералы', 'referrals'), Markup.button.callback('🎁 Бонус', 'daily')],
-        [Markup.button.callback('📊 Топы', 'top_menu'), Markup.button.callback('ℹ️ Помощь', 'help')]
+        [Markup.button.callback('💍 Свадьба', 'marriage'), Markup.button.callback('👥 Рефералы', 'referrals')],
+        [Markup.button.callback('🎁 Бонус', 'daily'), Markup.button.callback('📊 Топы', 'top_menu')],
+        [Markup.button.callback('ℹ️ Помощь', 'help')]
     ]);
 }
 
@@ -857,42 +920,6 @@ bot.on('text', async (ctx) => {
         return;
     }
     
-    if (text === 'помощь' || text === 'help') {
-        const isAdmin = await getAdminRole(userId);
-        let helpText = `📚 *ПОМОЩЬ*\n\n`;
-        helpText += `👤 *ОСНОВНЫЕ:*\n`;
-        helpText += `• б, профиль — профиль\n`;
-        helpText += `• бонус — ежедневная награда\n`;
-        helpText += `• топ — топ богачей\n`;
-        helpText += `• рефералы — партнёрка\n`;
-        helpText += `• клешни — инвентарь\n`;
-        helpText += `• ферма — криптоферма\n`;
-        helpText += `• собрать — собрать крипту\n\n`;
-        helpText += `📈 *КРИПТО-БИРЖА:*\n`;
-        helpText += `• market — курсы валют\n`;
-        helpText += `• buycrypto BTC 5 — купить BTC\n`;
-        helpText += `• portfolio — мой портфель\n\n`;
-        helpText += `🏚️ *ПОДЗЕМЕЛЬЯ:*\n`;
-        helpText += `• dungeon 1 — войти в подземелье\n`;
-        helpText += `• energy — восстановить энергию\n\n`;
-        helpText += `🎰 *ЛОТЕРЕЯ:*\n`;
-        helpText += `• lottery 1 2 3 4 5 6 — купить билет\n\n`;
-        helpText += `🚗 *ГОНКИ:*\n`;
-        helpText += `• buycar 1-5 — купить машину\n`;
-        helpText += `• upgradeengine — улучшить двигатель\n`;
-        if (isAdmin) {
-            helpText += `\n🛡️ *АДМИН:*\n`;
-            helpText += `• aget ID — полная инфо\n`;
-            helpText += `• give @ник сумма\n`;
-            helpText += `• ban @ник\n`;
-            helpText += `• unban @ник\n`;
-            helpText += `• announce текст\n`;
-            helpText += `• setadmin @ник роль\n`;
-        }
-        await ctx.reply(helpText, { parse_mode: 'Markdown', ...mainKeyboard() });
-        return;
-    }
-    
     if (text === 'ферма') {
         const user = await getUser(userId);
         const gpuCount = getGPUCount(user);
@@ -902,8 +929,9 @@ bot.on('text', async (ctx) => {
         let farmText = `💻 *КРИПТОФЕРМА*\n\n`;
         farmText += `📝 Видеокарты: ${gpuCount.toLocaleString()} шт.\n`;
         farmText += `💹 Доход: ${hourlyIncome.toLocaleString()} ₽/час\n`;
-        farmText += `📀 Амулеты: ${amulets.length}/10\n\n`;
-        farmText += `✨ /собрать — собрать доход\n`;
+        farmText += `📀 Амулеты: ${amulets.length}/10\n`;
+        if (user.married_to) farmText += `💍 Свадебный бонус: +25% к доходу!\n`;
+        farmText += `\n✨ /собрать — собрать доход\n`;
         farmText += `✨ /купить ферма X — купить видеокарты`;
         await ctx.reply(farmText, { parse_mode: 'Markdown', ...mainKeyboard() });
         return;
@@ -948,6 +976,42 @@ bot.on('text', async (ctx) => {
         refText += `✨ Твоя ссылка:\n`;
         refText += `\`https://t.me/${ctx.bot.botInfo.username}?start=${user.id}\``;
         await ctx.reply(refText, { parse_mode: 'Markdown', ...mainKeyboard() });
+        return;
+    }
+    
+    if (text === 'помощь' || text === 'help') {
+        const isAdmin = await getAdminRole(userId);
+        let helpText = `📚 *ПОМОЩЬ*\n\n`;
+        helpText += `👤 *ОСНОВНЫЕ:*\n`;
+        helpText += `• б, профиль — профиль\n`;
+        helpText += `• бонус — ежедневная награда\n`;
+        helpText += `• топ — топ богачей\n`;
+        helpText += `• рефералы — партнёрка\n`;
+        helpText += `• клешни — инвентарь\n`;
+        helpText += `• ферма — криптоферма\n`;
+        helpText += `• собрать — собрать крипту\n\n`;
+        helpText += `💍 *СВАДЬБА:*\n`;
+        helpText += `• предложить #ID — сделать предложение\n`;
+        helpText += `• marry yes/no — ответ на предложение\n\n`;
+        helpText += `📈 *КРИПТО-БИРЖА:*\n`;
+        helpText += `• market — курсы валют\n`;
+        helpText += `• buycrypto BTC 5 — купить BTC\n`;
+        helpText += `• portfolio — мой портфель\n\n`;
+        helpText += `🏚️ *ПОДЗЕМЕЛЬЯ:*\n`;
+        helpText += `• dungeon 1 — войти в подземелье\n`;
+        helpText += `• energy — восстановить энергию\n\n`;
+        helpText += `🎰 *ЛОТЕРЕЯ:*\n`;
+        helpText += `• lottery 1 2 3 4 5 6 — купить билет\n\n`;
+        if (isAdmin) {
+            helpText += `\n🛡️ *АДМИН:*\n`;
+            helpText += `• aget ID — полная инфо\n`;
+            helpText += `• give @ник сумма\n`;
+            helpText += `• ban @ник\n`;
+            helpText += `• unban @ник\n`;
+            helpText += `• announce текст\n`;
+            helpText += `• setadmin @ник роль\n`;
+        }
+        await ctx.reply(helpText, { parse_mode: 'Markdown', ...mainKeyboard() });
         return;
     }
 });
@@ -1046,6 +1110,48 @@ bot.command(['lottery', 'лотерея'], async (ctx) => {
         await ctx.reply(result.error, { parse_mode: 'Markdown' });
     } else {
         await ctx.reply(result.text, { parse_mode: 'Markdown', ...mainKeyboard() });
+    }
+});
+
+// ========== КОМАНДЫ СВАТОВСТВА ==========
+bot.command(['propose', 'предложить'], async (ctx) => {
+    const args = ctx.message.text.split(' ');
+    if (args.length < 2) {
+        await ctx.reply('❌ Использование: /propose 15 (ID игрока)\n\nСтоимость свадьбы: 500,000 монет', { parse_mode: 'Markdown' });
+        return;
+    }
+    
+    const targetId = parseInt(args[1]);
+    const result = await proposeMarriage(ctx.from.id, targetId);
+    
+    if (result.error) {
+        await ctx.reply(result.error, { parse_mode: 'Markdown' });
+    } else {
+        await ctx.reply(result.text, { parse_mode: 'Markdown', ...mainKeyboard() });
+    }
+});
+
+bot.command(['marry', 'свадьба'], async (ctx) => {
+    const args = ctx.message.text.split(' ');
+    if (args.length < 2) {
+        await ctx.reply('❌ Использование: /marry yes — принять предложение\n/marry no — отказаться', { parse_mode: 'Markdown' });
+        return;
+    }
+    
+    const answer = args[1].toLowerCase();
+    
+    if (answer === 'yes') {
+        const result = await acceptMarriage(ctx.from.id);
+        if (result.error) {
+            await ctx.reply(result.error, { parse_mode: 'Markdown' });
+        } else {
+            await ctx.reply(result.text, { parse_mode: 'Markdown', ...mainKeyboard() });
+        }
+    } else if (answer === 'no') {
+        marriageProposals.delete(ctx.from.id);
+        await ctx.reply('❌ Вы отказали в предложении.', { parse_mode: 'Markdown', ...mainKeyboard() });
+    } else {
+        await ctx.reply('❌ Использование: /marry yes или /marry no', { parse_mode: 'Markdown' });
     }
 });
 
@@ -1222,6 +1328,7 @@ bot.command(['aget', 'агет'], async (ctx) => {
     text += `├─────────────────────────┤\n`;
     text += `│ 💻 Видеокарт: ${user.gpu_count?.toLocaleString() || 2500}\n`;
     text += `│ 📊 Крипто-позиций: ${portfolio.length}\n`;
+    text += `│ 💍 В браке: ${user.married_to ? '✅' : '❌'}\n`;
     text += `│ 🚫 Бан: ${user.banned ? '✅' : '❌'}\n`;
     text += `│ 👔 Роль: ${role || 'Игрок'}\n`;
     text += `│ ${user.vip_level !== 'none' ? '👑 VIP: ' + user.vip_level : '✨ VIP: Нет'}\n`;
@@ -1277,7 +1384,9 @@ bot.action('crypto', async (ctx) => {
     const hourlyIncome = calculateCryptoIncome(user);
     let amulets = [];
     try { amulets = JSON.parse(user.farm_amulets || '[]'); } catch(e) { amulets = []; }
-    let text = `💻 *КРИПТОФЕРМА*\n\n📝 Видеокарты: ${gpuCount.toLocaleString()} шт.\n💹 Доход: ${hourlyIncome.toLocaleString()} ₽/час\n📀 Амулеты: ${amulets.length}/10\n\n✨ /собрать — собрать доход\n✨ /купить ферма X — купить видеокарты`;
+    let text = `💻 *КРИПТОФЕРМА*\n\n📝 Видеокарты: ${gpuCount.toLocaleString()} шт.\n💹 Доход: ${hourlyIncome.toLocaleString()} ₽/час\n📀 Амулеты: ${amulets.length}/10\n`;
+    if (user.married_to) text += `💍 Свадебный бонус: +25%!\n`;
+    text += `\n✨ /собрать — собрать доход\n✨ /купить ферма X — купить видеокарты`;
     await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
     await ctx.answerCbQuery();
 });
@@ -1312,6 +1421,21 @@ bot.action('dungeon', async (ctx) => {
 
 bot.action('lottery', async (ctx) => {
     await ctx.editMessageText(`🎰 *ЛОТЕРЕЯ*\n\n💰 Джекпот: ${globalJackpot.toLocaleString()} ₽\n\n/лотерея 1 2 3 4 5 6 — купить билет (10,000 ₽)\n⏰ Розыгрыш каждый час!`, { parse_mode: 'Markdown', ...mainKeyboard() });
+    await ctx.answerCbQuery();
+});
+
+bot.action('marriage', async (ctx) => {
+    const user = await getUser(ctx.from.id);
+    let text = `💍 *СВАДЬБА*\n\n`;
+    text += `💍 В браке: ${user.married_to ? `✅ с игроком #${user.married_to}` : '❌ не женат'}\n\n`;
+    text += `✨ *Бонусы брака:*\n`;
+    text += `• Общая криптоферма (+25% дохода)\n`;
+    text += `• Атака и защита +20\n`;
+    text += `• Совместные подземелья (скоро)\n\n`;
+    text += `📝 *Команды:*\n`;
+    text += `• /propose 15 — сделать предложение\n`;
+    text += `• /marry yes — принять предложение`;
+    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
     await ctx.answerCbQuery();
 });
 
@@ -1355,6 +1479,7 @@ bot.launch().then(() => {
     console.log('📈 Крипто-биржа активна!');
     console.log('🏚️ Подземелья готовы!');
     console.log('🎰 Лотерея запущена!');
+    console.log('💍 Система сватовства активна!');
     console.log('💻 Криптоферма работает!');
     console.log('👑 Админ-команды готовы!');
 });
