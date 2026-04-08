@@ -1,14 +1,10 @@
-require('dotenv').config();
-
 const { Telegraf, Markup } = require('telegraf');
 const sqlite3 = require('sqlite3').verbose();
 
-const TOKEN = process.env.BOT_TOKEN;
-if (!TOKEN) {
-    console.error('❌ BOT_TOKEN не найден!');
-    console.log('📝 Создай файл .env с содержимым: BOT_TOKEN=твой_токен');
-    process.exit(1);
-}
+// ========== ТВОЙ ТОКЕН ==========
+const TOKEN = '8693908580:AAHLkw25kJrc3Z6eXrUgVtFFEeJQMWShGTw';
+
+console.log('✅ Токен загружен, запускаю бота...');
 
 const bot = new Telegraf(TOKEN);
 
@@ -55,7 +51,6 @@ const VIP_STATUSES = {
     diamond: { name: '✨ Алмаз', price: 5000000, bonusIncome: 50, bonusDefense: 75, emoji: '✨' }
 };
 
-// ========== КЛЕШНИ ==========
 const CLAWS = {
     1: { name: '🦀 Клешня новичка', rarity: 'common', price: 1000, attackBonus: 5, defenseBonus: 5, emoji: '🦀' },
     2: { name: '🦞 Стальная клешня', rarity: 'rare', price: 5000, attackBonus: 15, defenseBonus: 10, emoji: '🦞' },
@@ -66,36 +61,6 @@ const CLAWS = {
 };
 
 const RARITY_COLORS = { common: '⚪', rare: '🔵', epic: '🟣', legendary: '🟠', mythic: '🔴', divine: '🌈' };
-
-// ========== НОВАЯ СИСТЕМА 5: ТУРНИРЫ ==========
-const TOURNAMENTS = {
-    daily: {
-        name: '🏆 ЕЖЕДНЕВНЫЙ ТУРНИР',
-        duration: 86400000,
-        rewardPool: 500000,
-        topRewards: [100000, 50000, 25000, 10000, 5000],
-        startTime: null,
-        participants: {}
-    },
-    weekly: {
-        name: '⭐ НЕДЕЛЬНЫЙ ТУРНИР',
-        duration: 604800000,
-        rewardPool: 5000000,
-        topRewards: [1000000, 500000, 250000, 100000, 50000],
-        startTime: null,
-        participants: {}
-    }
-};
-
-// ========== НОВАЯ СИСТЕМА 6: ДОСТИЖЕНИЯ (РАСШИРЕННЫЕ) ==========
-const ACHIEVEMENTS = {
-    1: { name: '🎯 ПЕРВЫЙ УРОВЕНЬ', desc: 'Достичь 5 уровня бизнеса', reward: 10000, check: (u) => u.business_level >= 5 },
-    2: { name: '💪 СИЛАЧ', desc: 'Купить 10 улучшений', reward: 25000, check: (u) => (u.manager + u.advertising + u.security + u.marketing + u.armored + u.hacker) >= 10 },
-    3: { name: '🦀 КОЛЛЕКЦИОНЕР', desc: 'Собрать 5 разных клешней', reward: 50000, check: (u) => false },
-    4: { name: '💰 МИЛЛИАРДЕР', desc: 'Накопить 100,000,000 монет', reward: 1000000, check: (u) => u.balance >= 100000000 },
-    5: { name: '⚔️ ВОИН', desc: 'Выиграть 50 атак', reward: 75000, check: (u) => u.attacks_won >= 50 },
-    6: { name: '🏆 ПОБЕДИТЕЛЬ', desc: 'Выиграть турнир', reward: 250000, check: (u) => u.tournament_wins >= 1 }
-};
 
 // ========== БАЗА ДАННЫХ ==========
 const db = new sqlite3.Database('business.db');
@@ -126,10 +91,6 @@ db.serialize(() => {
         equipped_claw INTEGER DEFAULT 0,
         exp INTEGER DEFAULT 0,
         level INTEGER DEFAULT 1,
-        last_dungeon TEXT,
-        last_space TEXT,
-        tournament_score INTEGER DEFAULT 0,
-        tournament_wins INTEGER DEFAULT 0,
         rating INTEGER DEFAULT 1000
     )`);
     
@@ -138,13 +99,6 @@ db.serialize(() => {
         claw_id INTEGER,
         quantity INTEGER DEFAULT 0,
         PRIMARY KEY (user_id, claw_id)
-    )`);
-    
-    db.run(`CREATE TABLE IF NOT EXISTS user_achievements (
-        user_id INTEGER,
-        achievement_id INTEGER,
-        completed INTEGER DEFAULT 0,
-        PRIMARY KEY (user_id, achievement_id)
     )`);
     
     db.run(`CREATE TABLE IF NOT EXISTS admins (
@@ -224,15 +178,6 @@ async function updateRating(userId, delta) {
     });
 }
 
-async function addTournamentScore(userId, score) {
-    return new Promise((resolve, reject) => {
-        db.run('UPDATE users SET tournament_score = tournament_score + ? WHERE user_id = ?', [score, userId], (err) => {
-            if (err) reject(err);
-            else resolve();
-        });
-    });
-}
-
 async function addClaw(userId, clawId, quantity = 1) {
     return new Promise((resolve, reject) => {
         db.run(`INSERT OR REPLACE INTO user_claws (user_id, claw_id, quantity) 
@@ -253,40 +198,6 @@ async function getUserClaws(userId) {
     });
 }
 
-async function checkAndCompleteAchievement(userId, achievementId) {
-    return new Promise((resolve, reject) => {
-        db.get('SELECT completed FROM user_achievements WHERE user_id = ? AND achievement_id = ?', [userId, achievementId], (err, row) => {
-            if (err) { reject(err); return; }
-            if (row && row.completed) { resolve(false); return; }
-            
-            const achievement = ACHIEVEMENTS[achievementId];
-            if (!achievement) { resolve(false); return; }
-            
-            db.get('SELECT * FROM users WHERE user_id = ?', [userId], (err2, user) => {
-                if (err2 || !user) { resolve(false); return; }
-                
-                if (achievement.check(user)) {
-                    db.run('INSERT OR REPLACE INTO user_achievements (user_id, achievement_id, completed) VALUES (?, ?, 1)', [userId, achievementId], (err3) => {
-                        if (!err3) {
-                            updateBalance(userId, achievement.reward);
-                            resolve(true);
-                        } else { resolve(false); }
-                    });
-                } else { resolve(false); }
-            });
-        });
-    });
-}
-
-async function getAdminRole(userId) {
-    return new Promise((resolve, reject) => {
-        db.get('SELECT role FROM admins WHERE user_id = ?', [userId], (err, row) => {
-            if (err) reject(err);
-            else resolve(row ? row.role : null);
-        });
-    });
-}
-
 function calculateIncome(user) {
     const level = user.business_level;
     const business = BUSINESSES[level];
@@ -295,10 +206,6 @@ function calculateIncome(user) {
     if (user.manager) multiplier += 0.20;
     if (user.advertising) multiplier += 0.15;
     if (user.marketing) multiplier += 0.25;
-    
-    if (user.vip_level !== 'none' && VIP_STATUSES[user.vip_level]) {
-        multiplier += VIP_STATUSES[user.vip_level].bonusIncome / 100;
-    }
     
     return Math.floor(business.income * multiplier);
 }
@@ -312,13 +219,11 @@ function calculateAttack(user) {
     return attack;
 }
 
-// ========== РЕЙТИНГОВЫЕ БИТВЫ ==========
 async function ratedBattle(attackerId, defenderId) {
     const attacker = await getUser(attackerId);
     const defender = await getUser(defenderId);
     
     if (!defender) return { error: 'Игрок не найден' };
-    if (defender.banned) return { error: 'Игрок забанен' };
     
     const attackPower = calculateAttack(attacker);
     const defensePower = 10 + (defender.business_level * 3);
@@ -334,13 +239,12 @@ async function ratedBattle(attackerId, defenderId) {
         await updateBalance(defenderId, -stolen);
         await updateRating(attackerId, ratingChange);
         await updateRating(defenderId, -ratingChange);
-        await addTournamentScore(attackerId, 10);
         
         return { 
             success: true, 
             stolen, 
             ratingChange,
-            text: `🏆 *ПОБЕДА!* 🏆\n\n💰 Украдено: ${stolen.toLocaleString()} монет\n📊 Рейтинг: +${ratingChange}\n🏅 Очков турнира: +10`
+            text: `🏆 *ПОБЕДА!* 🏆\n\n💰 Украдено: ${stolen.toLocaleString()} монет\n📊 Рейтинг: +${ratingChange}`
         };
     } else {
         const penalty = Math.floor(attacker.balance * 0.05);
@@ -357,16 +261,6 @@ async function ratedBattle(attackerId, defenderId) {
     }
 }
 
-// ========== ТУРНИРНАЯ ТАБЛИЦА ==========
-async function getTournamentTop() {
-    return new Promise((resolve, reject) => {
-        db.all('SELECT id, user_id, tournament_score FROM users ORDER BY tournament_score DESC LIMIT 10', (err, rows) => {
-            if (err) reject(err);
-            else resolve(rows);
-        });
-    });
-}
-
 async function getRatingTop() {
     return new Promise((resolve, reject) => {
         db.all('SELECT id, user_id, rating FROM users ORDER BY rating DESC LIMIT 10', (err, rows) => {
@@ -380,8 +274,8 @@ async function getRatingTop() {
 function mainKeyboard() {
     return Markup.inlineKeyboard([
         [Markup.button.callback('💰 Баланс', 'balance'), Markup.button.callback('🏪 Бизнес', 'business')],
-        [Markup.button.callback('⚔️ Рейтинг бой', 'rated_battle'), Markup.button.callback('🏆 Турнир', 'tournament')],
-        [Markup.button.callback('🦀 Клешни', 'claws'), Markup.button.callback('📊 Рейтинг топ', 'rating_top')],
+        [Markup.button.callback('⚔️ Рейтинг бой', 'rated_battle'), Markup.button.callback('📊 Рейтинг топ', 'rating_top')],
+        [Markup.button.callback('🦀 Клешни', 'claws'), Markup.button.callback('🎒 Магазин', 'shop')],
         [Markup.button.callback('🎁 Бонус', 'daily'), Markup.button.callback('ℹ️ Помощь', 'help')]
     ]);
 }
@@ -392,15 +286,11 @@ bot.start(async (ctx) => {
     const gameId = await registerUser(userId);
     const user = await getUser(userId);
     
-    const text = `⚔️ *CRYPTO EMPIRE: РЕЙТИНГОВЫЕ БИТВЫ* ⚔️\n\n` +
+    const text = `⚔️ *CRYPTO EMPIRE* ⚔️\n\n` +
                  `✨ *Твой ID:* #${gameId}\n` +
                  `🎚️ *Уровень:* ${user.level}\n` +
                  `📊 *Рейтинг:* ${user.rating}\n` +
                  `💰 *Баланс:* ${user.balance.toLocaleString()} монет\n\n` +
-                 `🔥 *Новые системы:*\n` +
-                 `• ⚔️ Рейтинговые бои — меняй рейтинг\n` +
-                 `• 🏆 Турниры — побеждай и получай награды\n` +
-                 `• 🎯 Достижения — выполняй и получай бонусы\n\n` +
                  `👇 *Используй кнопки!*`;
     
     await ctx.reply(text, { parse_mode: 'Markdown', ...mainKeyboard() });
@@ -416,13 +306,13 @@ bot.command(['balance', 'б', 'баланс'], async (ctx) => {
         return;
     }
     
-    await ctx.reply(`💰 *БАЛАНС*\n\n🆔 #${gameId}\n🎚️ Ур.${user.level}\n📊 Рейтинг: ${user.rating}\n💵 ${user.balance.toLocaleString()} монет`, { parse_mode: 'Markdown', ...mainKeyboard() });
+    await ctx.reply(`💰 *БАЛАНС*\n\n🆔 #${gameId}\n📊 Рейтинг: ${user.rating}\n💵 ${user.balance.toLocaleString()} монет`, { parse_mode: 'Markdown', ...mainKeyboard() });
 });
 
 bot.command(['rated_battle', 'рб', 'рейтбой'], async (ctx) => {
     const args = ctx.message.text.split(' ');
     if (args.length < 2) {
-        await ctx.reply('❌ Использование: рейтбой @username\n\nПравила:\n• Победа поднимает рейтинг\n• Поражение понижает рейтинг\n• Победитель крадёт 10% денег\n• Рейтинг влияет на силу атаки', { parse_mode: 'Markdown' });
+        await ctx.reply('❌ Использование: рейтбой @username\n\nПравила:\n• Победа поднимает рейтинг\n• Поражение понижает рейтинг\n• Победитель крадёт 10% денег', { parse_mode: 'Markdown' });
         return;
     }
     
@@ -444,32 +334,6 @@ bot.command(['rated_battle', 'рб', 'рейтбой'], async (ctx) => {
     } catch (e) {
         await ctx.reply('❌ Пользователь не найден!');
     }
-});
-
-bot.command(['tournament', 'турнир'], async (ctx) => {
-    const userId = ctx.from.id;
-    const user = await getUser(userId);
-    const top = await getTournamentTop();
-    
-    let text = `🏆 *ТУРНИРНАЯ ТАБЛИЦА* 🏆\n\n`;
-    text += `🎯 Твои очки: ${user.tournament_score}\n\n`;
-    text += `📊 *ТОП 10:*\n`;
-    
-    for (let i = 0; i < top.length; i++) {
-        const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i+1}.`;
-        text += `${medal} #${top[i].id} — ${top[i].tournament_score} очков\n`;
-    }
-    
-    text += `\n✨ *Как заработать очки:*\n`;
-    text += `• Победа в рейтинг бое: +10 очков\n`;
-    text += `• Выигрыш в турнире: +500 очков\n`;
-    text += `• Ежедневный бонус: +5 очков\n\n`;
-    text += `🏆 *Награды в конце недели:*\n`;
-    text += `🥇 1 место: 100,000 монет\n`;
-    text += `🥈 2 место: 50,000 монет\n`;
-    text += `🥉 3 место: 25,000 монет`;
-    
-    await ctx.reply(text, { parse_mode: 'Markdown', ...mainKeyboard() });
 });
 
 bot.command(['rating_top', 'rtop', 'рейтингтоп'], async (ctx) => {
@@ -511,8 +375,7 @@ bot.command(['shop', 'магазин'], async (ctx) => {
     for (const [id, claw] of Object.entries(CLAWS)) {
         text += `${RARITY_COLORS[claw.rarity]} *${claw.name}*\n`;
         text += `💰 ${claw.price.toLocaleString()} монет\n`;
-        text += `⚔️ +${claw.attackBonus} атаки | 🛡️ +${claw.defenseBonus} защиты\n`;
-        text += `📦 Редкость: ${claw.rarity}\n\n`;
+        text += `⚔️ +${claw.attackBonus} атаки | 🛡️ +${claw.defenseBonus} защиты\n\n`;
     }
     text += `🛒 Купить: /buy 1 (номер клешни)`;
     
@@ -563,24 +426,22 @@ bot.command(['daily', 'бонус'], async (ctx) => {
     const bonus = 1000 + (streak * 500);
     
     await updateBalance(userId, bonus);
-    await addTournamentScore(userId, 5);
     
     db.run('UPDATE users SET last_daily = ?, streak = ? WHERE user_id = ?', [now.toISOString(), streak, userId]);
     
-    await ctx.reply(`🎁 *ЕЖЕДНЕВНЫЙ БОНУС!*\n\n🔥 Серия: ${streak} дней\n💰 +${bonus.toLocaleString()} монет\n🏅 +5 очков турнира`, { parse_mode: 'Markdown', ...mainKeyboard() });
+    await ctx.reply(`🎁 *ЕЖЕДНЕВНЫЙ БОНУС!*\n\n🔥 Серия: ${streak} дней\n💰 +${bonus.toLocaleString()} монет`, { parse_mode: 'Markdown', ...mainKeyboard() });
 });
 
 bot.command(['help', 'помощь'], async (ctx) => {
     const text = `📚 *ПОМОЩЬ*\n\n` +
                  `💰 *Баланс* — твои деньги\n` +
                  `⚔️ *Рейтбой @ник* — PvP битва с рейтингом\n` +
-                 `🏆 *Турнир* — турнирная таблица\n` +
                  `📊 *Рейтингтоп* — топ рейтинга\n` +
                  `🦀 *Клешни* — твои клешни\n` +
                  `🎒 *Магазин* — купить клешню\n` +
                  `🎁 *Бонус* — ежедневный бонус\n\n` +
                  `⚡ *Алиасы (без /):*\n` +
-                 `баланс, б, рейтбой, турнир, клешни, магазин, бонус`;
+                 `баланс, б, рейтбой, рб, клешни, магазин, бонус, помощь`;
     
     await ctx.reply(text, { parse_mode: 'Markdown', ...mainKeyboard() });
 });
@@ -604,19 +465,7 @@ bot.action('business', async (ctx) => {
 });
 
 bot.action('rated_battle', async (ctx) => {
-    await ctx.editMessageText(`⚔️ *РЕЙТИНГОВЫЙ БОЙ*\n\nВведи в чат:\n/рейтбой @username\n\n📊 Рейтинг влияет на силу атаки!`, { parse_mode: 'Markdown', ...mainKeyboard() });
-    await ctx.answerCbQuery();
-});
-
-bot.action('tournament', async (ctx) => {
-    const userId = ctx.from.id;
-    const user = await getUser(userId);
-    const top = await getTournamentTop();
-    let text = `🏆 *ТУРНИР*\n\nТвои очки: ${user.tournament_score}\n\nТОП:\n`;
-    for (let i = 0; i < Math.min(5, top.length); i++) {
-        text += `${i+1}. #${top[i].id} — ${top[i].tournament_score}\n`;
-    }
-    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
+    await ctx.editMessageText(`⚔️ *РЕЙТИНГОВЫЙ БОЙ*\n\nВведи в чат:\n/рейтбой @username`, { parse_mode: 'Markdown', ...mainKeyboard() });
     await ctx.answerCbQuery();
 });
 
@@ -641,6 +490,16 @@ bot.action('claws', async (ctx) => {
     await ctx.answerCbQuery();
 });
 
+bot.action('shop', async (ctx) => {
+    let text = `🎒 *МАГАЗИН КЛЕШНЕЙ*\n\n`;
+    for (const [id, claw] of Object.entries(CLAWS)) {
+        text += `${RARITY_COLORS[claw.rarity]} ${claw.name} — ${claw.price.toLocaleString()}💰\n`;
+    }
+    text += `\n🛒 /buy 1-6`;
+    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainKeyboard() });
+    await ctx.answerCbQuery();
+});
+
 bot.action('daily', async (ctx) => {
     await ctx.editMessageText(`🎁 /бонус — получи ежедневную награду!`, { parse_mode: 'Markdown', ...mainKeyboard() });
     await ctx.answerCbQuery();
@@ -661,7 +520,6 @@ bot.on('text', async (ctx) => {
         'б': () => bot.telegram.sendMessage(userId, '/balance'),
         'рейтбой': (args) => bot.telegram.sendMessage(userId, `/rated_battle ${args}`),
         'рб': (args) => bot.telegram.sendMessage(userId, `/rated_battle ${args}`),
-        'турнир': () => bot.telegram.sendMessage(userId, '/tournament'),
         'клешни': () => bot.telegram.sendMessage(userId, '/claws'),
         'магазин': () => bot.telegram.sendMessage(userId, '/shop'),
         'бонус': () => bot.telegram.sendMessage(userId, '/daily'),
@@ -681,9 +539,9 @@ bot.on('text', async (ctx) => {
 
 // ========== ЗАПУСК ==========
 bot.launch().then(() => {
-    console.log('⚔️ CRYPTO EMPIRE: РЕЙТИНГОВЫЕ БИТВЫ ЗАПУЩЕН!');
-    console.log('📡 Новые системы: РЕЙТИНГ, ТУРНИРЫ, ДОСТИЖЕНИЯ');
-    console.log('✨ Твой ID: #1');
+    console.log('⚔️ CRYPTO EMPIRE ЗАПУЩЕН!');
+    console.log('🤖 Бот готов к работе!');
+    console.log('✨ Твой ID в игре: #1');
 });
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
