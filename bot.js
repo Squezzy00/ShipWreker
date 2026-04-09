@@ -1253,6 +1253,17 @@ for (const a of actions) bot.action(a, async (ctx) => {
     try { await ctx.answerCbQuery(); } catch(e) {}
 });
 
+// ========== HTTP-СЕРВЕР ДЛЯ RENDER ==========
+const http = require('http');
+const server = http.createServer((req, res) => {
+    res.writeHead(200);
+    res.end('🤖 Crypto Empire Bot is running!');
+});
+const PORT = process.env.PORT || 10000;
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`✅ HTTP сервер запущен на порту ${PORT}`);
+});
+
 // ========== ЗАПУСК ==========
 bot.launch().then(() => {
     console.log('🌟 CRYPTO EMPIRE ЗАПУЩЕН!');
