@@ -347,8 +347,7 @@ const TRAVEL_DESTINATIONS = {
             { q: 'Как называется главный музей Парижа?', options: ['Орсе', 'Лувр', 'Помпиду'], correct: 1, reward: 1000 },
             { q: 'Какая река протекает через Париж?', options: ['Рона', 'Сена', 'Луара'], correct: 1, reward: 1000 }
         ],
-        reward: 5000,
-        image: 'https://example.com/eiffel.jpg'
+        reward: 5000
     },
     2: {
         name: '🏯 Токио',
@@ -448,7 +447,7 @@ async function startTravel(userId, destinationId) {
 
 async function answerTravelQuestion(userId, answerNum) {
     const session = userTravelSessions.get(userId);
-    if (!session) return { error: '❌ У вас нет активной экскурсии! Начните: /путешествие 1' };
+    if (!session) return { error: '❌ У вас нет активной экскурсии! Начните: /travel 1' };
     
     const dest = TRAVEL_DESTINATIONS[session.destinationId];
     const currentQ = dest.questions[session.currentStep];
@@ -502,10 +501,81 @@ async function answerTravelQuestion(userId, answerNum) {
 
 async function getTravelStatus(userId) {
     const session = userTravelSessions.get(userId);
-    if (!session) return { text: '✈️ *ВИРТУАЛЬНЫЙ ПУТЕШЕСТВЕННИК*\n\nДоступные направления:\n1. 🗼 Париж\n2. 🏯 Токио\n3. 🏛️ Рим\n4. 🦁 Нью-Йорк\n5. 🐪 Египет\n\n/путешествие 1 — начать экскурсию\n\n💰 Стоимость: 10,000 монет\n🏆 Награда: до 15,000 монет' };
+    if (!session) return { text: '✈️ *ВИРТУАЛЬНЫЙ ПУТЕШЕСТВЕННИК*\n\nДоступные направления:\n1. 🗼 Париж\n2. 🏯 Токио\n3. 🏛️ Рим\n4. 🦁 Нью-Йорк\n5. 🐪 Египет\n\n/travel 1 — начать экскурсию\n\n💰 Стоимость: 10,000 монет\n🏆 Награда: до 15,000 монет' };
     
     const dest = TRAVEL_DESTINATIONS[session.destinationId];
     return { text: `✈️ *АКТИВНОЕ ПУТЕШЕСТВИЕ*\n\n📍 ${dest.name}\n📊 Вопрос ${session.currentStep + 1}/${dest.questions.length}\n💰 Текущий выигрыш: ${session.score} монет` };
+}
+
+// ========== КИБЕРСПОРТИВНАЯ АРЕНА ==========
+let arenaQueue = [];
+let arenaBattles = new Map();
+let arenaLeaderboard = new Map();
+
+async function joinArena(userId) {
+    const user = await getUser(userId);
+    if (!user) return { error: '❌ Вы не зарегистрированы!' };
+    
+    if (arenaQueue.includes(userId)) return { error: '❌ Вы уже в очереди!' };
+    
+    arenaQueue.push(userId);
+    
+    if (arenaQueue.length >= 2) {
+        const player1 = arenaQueue.shift();
+        const player2 = arenaQueue.shift();
+        
+        const user1 = await getUser(player1);
+        const user2 = await getUser(player2);
+        
+        const power1 = calculateAttack(user1) + calculateDefense(user1);
+        const power2 = calculateAttack(user2) + calculateDefense(user2);
+        
+        const winChance1 = power1 / (power1 + power2) * 100;
+        const win = Math.random() * 100 < winChance1;
+        
+        const winner = win ? player1 : player2;
+        const loser = win ? player2 : player1;
+        
+        const reward = 25000;
+        await updateBalance(winner, reward);
+        
+        const winnerRating = arenaLeaderboard.get(winner) || 1000;
+        const loserRating = arenaLeaderboard.get(loser) || 1000;
+        
+        arenaLeaderboard.set(winner, winnerRating + 25);
+        arenaLeaderboard.set(loser, Math.max(100, loserRating - 25));
+        
+        await bot.telegram.sendMessage(winner, `🏆 *АРЕНА: ПОБЕДА!* 🏆\n\n💰 Вы выиграли ${reward.toLocaleString()} монет!\n📊 Рейтинг арены: +25`);
+        await bot.telegram.sendMessage(loser, `💀 *АРЕНА: ПОРАЖЕНИЕ!* 💀\n\n💔 Вы проиграли бой!\n📊 Рейтинг арены: -25`);
+        
+        return { success: true, text: `⚔️ *БОЙ НА АРЕНЕ ЗАВЕРШЁН!* ⚔️\n\nПобедитель получает 25,000 монет!` };
+    } else {
+        setTimeout(async () => {
+            const index = arenaQueue.indexOf(userId);
+            if (index !== -1) {
+                arenaQueue.splice(index, 1);
+                const user = await getUser(userId);
+                if (user) {
+                    await bot.telegram.sendMessage(userId, `⏰ *ВРЕМЯ ОЖИДАНИЯ ИСТЕКЛО!*\n\nСоперник не найден. Попробуйте снова!`);
+                }
+            }
+        }, 60000);
+        
+        return { success: true, text: `⚔️ *ВЫ ВСТУПИЛИ В ОЧЕРЕДЬ АРЕНЫ!* ⚔️\n\nОжидаем соперника... (до 60 секунд)\n💰 Приз победителю: 25,000 монет` };
+    }
+}
+
+async function getArenaLeaderboard() {
+    const sorted = [...arenaLeaderboard.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+    let text = `🏆 *ТОП АРЕНЫ* 🏆\n\n`;
+    for (let i = 0; i < sorted.length; i++) {
+        const [userId, rating] = sorted[i];
+        const user = await getUserById(parseInt(userId));
+        const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '📌';
+        text += `${medal} #${user?.id || userId} — ${rating} рейтинга\n`;
+    }
+    if (sorted.length === 0) text += `Пока нет участников. Будьте первым!`;
+    return text;
 }
 
 // ========== БАЗА ДАННЫХ ==========
@@ -641,6 +711,29 @@ async function updateBalance(userId, amount) {
             }
         });
     });
+}
+
+async function upgradeBusiness(userId) {
+    const user = await getUser(userId);
+    if (!user) return { error: '❌ Пользователь не найден!' };
+    
+    const currentLevel = user.business_level;
+    if (currentLevel >= 10) return { error: '❌ У вас максимальный уровень бизнеса!' };
+    
+    const nextBusiness = BUSINESSES[currentLevel + 1];
+    const cost = BUSINESSES[currentLevel].upgradeCost;
+    
+    if (user.balance < cost) {
+        return { error: `❌ Не хватает ${(cost - user.balance).toLocaleString()} монет для апгрейда!` };
+    }
+    
+    await updateBalance(userId, -cost);
+    await setUserField(userId, 'business_level', currentLevel + 1);
+    
+    return { 
+        success: true, 
+        text: `🎉 *БИЗНЕС УЛУЧШЕН!* 🎉\n\n${BUSINESSES[currentLevel].emoji} ${BUSINESSES[currentLevel].name} → ${nextBusiness.emoji} ${nextBusiness.name}\n💵 Новый доход: ${nextBusiness.income.toLocaleString()} монет\n💰 Остаток: ${(user.balance - cost).toLocaleString()} монет`
+    };
 }
 
 async function setUserField(userId, field, value) {
@@ -1290,9 +1383,9 @@ function mainKeyboard() {
         [Markup.button.callback('🏭 Заводы', 'factory'), Markup.button.callback('🏚️ Подземелье', 'dungeon')],
         [Markup.button.callback('🎰 Лотерея', 'lottery'), Markup.button.callback('🏪 Чёрный рынок', 'blackmarket')],
         [Markup.button.callback('💍 Свадьба', 'marriage'), Markup.button.callback('🚗 Машины', 'car_shop')],
-        [Markup.button.callback('✈️ Путешествия', 'travel'), Markup.button.callback('👥 Рефералы', 'referrals')],
-        [Markup.button.callback('🎁 Бонус', 'daily'), Markup.button.callback('📊 Топы', 'top_menu')],
-        [Markup.button.callback('ℹ️ Помощь', 'help')]
+        [Markup.button.callback('✈️ Путешествия', 'travel'), Markup.button.callback('⚔️ Арена', 'arena')],
+        [Markup.button.callback('👥 Рефералы', 'referrals'), Markup.button.callback('🎁 Бонус', 'daily')],
+        [Markup.button.callback('📊 Топы', 'top_menu'), Markup.button.callback('ℹ️ Помощь', 'help')]
     ]);
 }
 
@@ -1310,7 +1403,6 @@ bot.on('text', async (ctx) => {
     const text = ctx.message.text.toLowerCase().trim();
     const userId = ctx.from.id;
     
-    // Описания систем
     if (text === 'подземелье' || text === 'подземелья') {
         await ctx.reply(`🏚️ *ПОДЗЕМЕЛЬЯ*\n\nСражайся с боссами, получай монеты, опыт и легендарные предметы! У каждого подземелья свои боссы и награды.\n\n📊 *Доступные подземелья:*\n1. 🏚️ Склеп гоблинов (ур.1) — награда до 15,000 ₽\n2. 🔥 Вулкан дракона (ур.5) — награда до 150,000 ₽\n3. ❄️ Ледяная цитадель (ур.10) — награда до 1,500,000 ₽\n\n⚡ У тебя есть энергия (100), которая тратится на вход. Восстанавливается каждый час!\n\n📝 *Команды:*\n• /dungeon 1 — войти в подземелье\n• /energy — восстановить энергию`, { parse_mode: 'Markdown', ...mainKeyboard() });
         return;
@@ -1348,6 +1440,11 @@ bot.on('text', async (ctx) => {
     
     if (text === 'путешествия' || text === 'путешествие') {
         await ctx.reply(`✈️ *ВИРТУАЛЬНЫЙ ПУТЕШЕСТВЕННИК*\n\nОтправляйся в виртуальные экскурсии по городам мира, отвечай на вопросы и зарабатывай монеты!\n\n🌍 *Доступные направления:*\n1. 🗼 Париж\n2. 🏯 Токио\n3. 🏛️ Рим\n4. 🦁 Нью-Йорк\n5. 🐪 Египет\n\n💰 *Стоимость экскурсии:* 10,000 монет\n🏆 *Максимальная награда:* 15,000 монет\n❓ В каждом путешествии 3 вопроса\n\n📝 *Команды:*\n• /travel 1 — начать экскурсию в Париж\n• /travel_status — статус текущей экскурсии`, { parse_mode: 'Markdown', ...mainKeyboard() });
+        return;
+    }
+    
+    if (text === 'арена' || text === 'киберспорт') {
+        await ctx.reply(`⚔️ *КИБЕРСПОРТИВНАЯ АРЕНА*\n\nСражайся с другими игроками в PvP-битвах, повышай рейтинг и зарабатывай монеты!\n\n📊 *Правила:*\n• Вступление в очередь: /arena\n• Приз победителю: 25,000 монет\n• Рейтинг арены меняется в зависимости от силы соперника\n\n🏆 *Топ арены:* /arena_top\n\n⚔️ *Сила игрока зависит от:*\n• Уровня бизнеса\n• Клешней\n• VIP статуса\n• Свадебного бонуса`, { parse_mode: 'Markdown', ...mainKeyboard() });
         return;
     }
     
@@ -1450,6 +1547,7 @@ bot.on('text', async (ctx) => {
         helpText += `🏪 *ЧЁРНЫЙ РЫНОК:*\n• blackmarket — товары\n\n`;
         helpText += `💍 *СВАДЬБА:*\n• propose ID — предложить\n• marry yes/no — ответ\n\n`;
         helpText += `✈️ *ПУТЕШЕСТВИЯ:*\n• travel 1-5 — начать экскурсию\n• travel_status — статус\n\n`;
+        helpText += `⚔️ *АРЕНА:*\n• arena — вступить в очередь\n• arena_top — топ арены\n\n`;
         helpText += `👥 *РЕФЕРАЛЫ:*\n• referrals — моя ссылка\n\n`;
         helpText += `🚗 *ГОНКИ:*\n• buycar 1-5 — купить машину\n\n`;
         helpText += `🛡️ *АДМИН:*\n• aget ID — инфо\n• give @ник сумма\n• ban/unban\n• announce текст\n• setadmin @ник роль`;
@@ -1458,7 +1556,7 @@ bot.on('text', async (ctx) => {
     }
 });
 
-// ========== ОСНОВНЫЕ КОМАНДЫ ==========
+// ========== КОМАНДЫ ==========
 bot.command(['market', 'курсы'], async (ctx) => { await ctx.reply(await getMarketRates(), { parse_mode: 'Markdown', ...mainKeyboard() }); });
 bot.command(['portfolio', 'портфель'], async (ctx) => { const r = await getCryptoPortfolio(ctx.from.id); await ctx.reply(r.text, { parse_mode: 'Markdown', ...mainKeyboard() }); });
 bot.command(['buycrypto', 'купитькрипту'], async (ctx) => { const a = ctx.message.text.split(' '); if (a.length < 3) { await ctx.reply('❌ /buycrypto BTC 5'); return; } const r = await buyCrypto(ctx.from.id, a[1].toLowerCase(), parseFloat(a[2]), a[3]?.startsWith('x') ? parseInt(a[3].slice(1)) : 1); await ctx.reply(r.error || r.text, { parse_mode: 'Markdown', ...mainKeyboard() }); });
@@ -1478,6 +1576,8 @@ bot.command(['buycar', 'купитьмашину'], async (ctx) => { const a = c
 bot.command(['upgradeengine', 'улучшитьдвигатель'], async (ctx) => { const user = await getUser(ctx.from.id); if (!user.car_id) { await ctx.reply('❌ Нет машины!'); return; } const current = user.car_engine_level || 0; const next = ENGINE_UPGRADES[current + 1]; if (!next) { await ctx.reply('❌ Максимальный уровень!'); return; } if (user.balance >= next.cost) { await updateBalance(ctx.from.id, -next.cost); await setUserField(ctx.from.id, 'car_engine_level', current + 1); await ctx.reply(`⚙️ Двигатель улучшен до ${current + 1} ур. +${next.speedBonus} скорости!`); } else { await ctx.reply(`❌ Нужно ${next.cost.toLocaleString()} ₽`); } });
 bot.command(['travel', 'путешествие'], async (ctx) => { const a = ctx.message.text.split(' '); if (a.length < 2) { await ctx.reply(`✈️ *ДОСТУПНЫЕ НАПРАВЛЕНИЯ*\n1. 🗼 Париж\n2. 🏯 Токио\n3. 🏛️ Рим\n4. 🦁 Нью-Йорк\n5. 🐪 Египет\n\n/travel 1 — начать экскурсию`, { parse_mode: 'Markdown' }); return; } const destId = parseInt(a[1]); const result = await startTravel(ctx.from.id, destId); if (result.error) { await ctx.reply(result.error, { parse_mode: 'Markdown' }); } else { await ctx.reply(result.text, { parse_mode: 'Markdown' }); } });
 bot.command(['travel_status', 'статус'], async (ctx) => { const status = await getTravelStatus(ctx.from.id); await ctx.reply(status.text, { parse_mode: 'Markdown', ...mainKeyboard() }); });
+bot.command(['arena', 'арена'], async (ctx) => { const result = await joinArena(ctx.from.id); await ctx.reply(result.text, { parse_mode: 'Markdown', ...mainKeyboard() }); });
+bot.command(['arena_top', 'аренатоп'], async (ctx) => { const text = await getArenaLeaderboard(); await ctx.reply(text, { parse_mode: 'Markdown', ...mainKeyboard() }); });
 bot.command(['referrals', 'рефералы'], async (ctx) => { const referral = await getReferralInfo(ctx.from.id); await ctx.reply(`👥 *РЕФЕРАЛЬНАЯ СИСТЕМА*\n\n📊 Приглашено: ${referral.count}\n💰 Заработано: ${referral.earned.toLocaleString()} ₽\n\n✨ Твоя ссылка:\n\`${referral.link}\``, { parse_mode: 'Markdown', ...mainKeyboard() }); });
 
 // ========== АДМИН КОМАНДЫ ==========
@@ -1535,6 +1635,12 @@ bot.command(['setadmin', 'назначить'], async (ctx) => {
     } catch(e) { await ctx.reply('❌ Пользователь не найден!'); }
 });
 
+bot.command(['upgradebusiness', 'улучшитьбизнес'], async (ctx) => {
+    const result = await upgradeBusiness(ctx.from.id);
+    if (result.error) { await ctx.reply(result.error, { parse_mode: 'Markdown' }); }
+    else { await ctx.reply(result.text, { parse_mode: 'Markdown', ...mainKeyboard() }); }
+});
+
 bot.command(['aget', 'агет'], async (ctx) => {
     if (!await hasPermission(ctx.from.id, 'help_users')) { await ctx.reply('❌ Нет прав!'); return; }
     const a = ctx.message.text.split(' ');
@@ -1568,10 +1674,26 @@ bot.on('text', async (ctx) => {
 });
 
 // ========== КНОПКИ ==========
-const actions = ['profile', 'business', 'crypto', 'exchange', 'factory', 'dungeon', 'lottery', 'blackmarket', 'marriage', 'car_shop', 'travel', 'referrals', 'daily', 'top_menu', 'help'];
+const actions = ['profile', 'business', 'crypto', 'exchange', 'factory', 'dungeon', 'lottery', 'blackmarket', 'marriage', 'car_shop', 'travel', 'arena', 'referrals', 'daily', 'top_menu', 'help'];
 for (const a of actions) bot.action(a, async (ctx) => {
     if (a === 'profile') await ctx.editMessageText(await getProfileText(ctx.from.id), { parse_mode: 'Markdown', ...mainKeyboard() });
-    else if (a === 'business') { const u = await getUser(ctx.from.id); const b = BUSINESSES[u.business_level]; await ctx.editMessageText(`${b.emoji} *${b.name}* (ур.${u.business_level}/10)\n💵 Доход: ${Math.floor(b.income * (1 + (u.manager?0.2:0) + (u.advertising?0.15:0) + (u.marketing?0.25:0))).toLocaleString()} ₽`, { parse_mode: 'Markdown', ...mainKeyboard() }); }
+    else if (a === 'business') { 
+        const u = await getUser(ctx.from.id); 
+        const b = BUSINESSES[u.business_level]; 
+        const keyboard = Markup.inlineKeyboard([
+            [Markup.button.callback('⬆️ Апгрейд бизнеса', 'upgrade_business')],
+            [Markup.button.callback('🔙 Назад', 'back_to_menu')]
+        ]);
+        await ctx.editMessageText(`${b.emoji} *${b.name}* (ур.${u.business_level}/10)\n💵 Доход: ${Math.floor(b.income * (1 + (u.manager?0.2:0) + (u.advertising?0.15:0) + (u.marketing?0.25:0))).toLocaleString()} ₽\n⬆️ Апгрейд: ${b.upgradeCost?.toLocaleString() || 'MAX'} ₽`, { parse_mode: 'Markdown', ...keyboard }); 
+    }
+    else if (a === 'upgrade_business') {
+        const result = await upgradeBusiness(ctx.from.id);
+        if (result.error) { await ctx.editMessageText(result.error, { parse_mode: 'Markdown', ...mainKeyboard() }); }
+        else { await ctx.editMessageText(result.text, { parse_mode: 'Markdown', ...mainKeyboard() }); }
+        await ctx.answerCbQuery();
+        return;
+    }
+    else if (a === 'back_to_menu') await ctx.editMessageText(await getProfileText(ctx.from.id), { parse_mode: 'Markdown', ...mainKeyboard() });
     else if (a === 'crypto') { const u = await getUser(ctx.from.id); const gpu = getGPUCount(u); const income = calculateCryptoIncome(u); let am = []; try { am = JSON.parse(u.farm_amulets || '[]'); } catch(e) {} await ctx.editMessageText(`💻 *КРИПТОФЕРМА*\n\n📝 Видеокарты: ${gpu.toLocaleString()} шт.\n💹 Доход: ${income.toLocaleString()} ₽/час\n📀 Амулеты: ${am.length}/10\n\n✨ /собрать — собрать доход`, { parse_mode: 'Markdown', ...mainKeyboard() }); }
     else if (a === 'exchange') await ctx.editMessageText(await getMarketRates(), { parse_mode: 'Markdown', ...mainKeyboard() });
     else if (a === 'factory') await ctx.editMessageText(await getResourcesStatus(ctx.from.id), { parse_mode: 'Markdown', ...mainKeyboard() });
@@ -1581,6 +1703,7 @@ for (const a of actions) bot.action(a, async (ctx) => {
     else if (a === 'marriage') { const u = await getUser(ctx.from.id); await ctx.editMessageText(`💍 *СВАДЬБА*\n💍 ${u.married_to ? `В браке с #${u.married_to}` : 'Не женат'}\n\n/propose ID — сделать предложение\n/marry yes/no — ответ`, { parse_mode: 'Markdown', ...mainKeyboard() }); }
     else if (a === 'car_shop') { let t = '🚗 *МАШИНЫ*\n'; for (const [id, c] of Object.entries(CARS)) t += `${c.emoji} ${c.name} — ${c.price.toLocaleString()} ₽\n`; t += `\n/buycar 1-5`; await ctx.editMessageText(t, { parse_mode: 'Markdown', ...mainKeyboard() }); }
     else if (a === 'travel') await ctx.editMessageText(`✈️ *ПУТЕШЕСТВИЯ*\n\n1. 🗼 Париж\n2. 🏯 Токио\n3. 🏛️ Рим\n4. 🦁 Нью-Йорк\n5. 🐪 Египет\n\n/travel 1-5 — начать экскурсию`, { parse_mode: 'Markdown', ...mainKeyboard() });
+    else if (a === 'arena') await ctx.editMessageText(`⚔️ *АРЕНА*\n\n/arena — вступить в очередь\n/arena_top — топ арены\n\n💰 Приз: 25,000 монет`, { parse_mode: 'Markdown', ...mainKeyboard() });
     else if (a === 'referrals') { const r = await getReferralInfo(ctx.from.id); await ctx.editMessageText(`👥 *РЕФЕРАЛЫ*\n\n📊 Приглашено: ${r.count}\n💰 Заработано: ${r.earned.toLocaleString()} ₽\n\n✨ Ссылка:\n\`${r.link}\``, { parse_mode: 'Markdown', ...mainKeyboard() }); }
     else if (a === 'daily') await ctx.editMessageText(`🎁 /бонус — ежедневная награда!`, { parse_mode: 'Markdown', ...mainKeyboard() });
     else if (a === 'top_menu') { const top = await new Promise((resolve) => db.all('SELECT id, balance FROM users ORDER BY balance DESC LIMIT 10', (err, rows) => resolve(rows || []))); let t = `🏆 *ТОП 10 БОГАЧЕЙ* 🏆\n\n`; for (let i=0; i<top.length; i++) t += `${i===0?'🥇':i===1?'🥈':i===2?'🥉':'📌'} #${top[i].id} — ${top[i].balance.toLocaleString()} ₽\n`; await ctx.editMessageText(t, { parse_mode: 'Markdown', ...mainKeyboard() }); }
@@ -1598,6 +1721,7 @@ bot.launch().then(() => {
     console.log('🏪 Чёрный рынок активен!');
     console.log('💍 Сватовство активно!');
     console.log('✈️ Виртуальный путешественник активен!');
+    console.log('⚔️ Киберспортивная арена активна!');
     console.log('👥 Реферальная система активна!');
     console.log('🎁 Щедрый день активен!');
     console.log('💻 Криптоферма работает!');
